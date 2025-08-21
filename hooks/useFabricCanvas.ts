@@ -1,14 +1,14 @@
 "use client";
 
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useCallback } from "react";
 import * as fabric from "fabric";
 import { addImageBlob, addSVGString, copyToSystemClipboard, tryReadFromSystemClipboard } from "@/lib/fabric/clipboard";
 import { addObjectsAsSelection, centerObjectAt, getCanvasCenterWorld } from "@/lib/fabric/utils";
 import { classifyClipboardObject, FabricClipboardEntry } from "@/lib/fabric/types";
+import { toast } from "sonner";
 
 export interface FabricCanvasHook {
     canvasRef: React.RefObject<HTMLCanvasElement>;
-    clipboardStatus: string | null;
     copy: () => Promise<void>;
     cut: () => Promise<void>;
     paste: () => Promise<void>;
@@ -21,7 +21,35 @@ export const useFabricCanvas = (): FabricCanvasHook => {
     const fabricCanvasRef = useRef<fabric.Canvas | null>(null);
     const clipboardRef = useRef<FabricClipboardEntry | null>(null);
     const lastPointerRef = useRef<fabric.Point | null>(null);
-    const [clipboardStatus, setClipboardStatus] = useState<string | null>(null);
+    // Track a transient toast id for long-running operations (e.g. image paste)
+    const inFlightToastIdRef = useRef<string | number | null>(null);
+    // Suppress DOM paste handler if we've already handled via programmatic paste (Ctrl/Cmd+V)
+    const suppressNextDomPasteRef = useRef(false);
+
+    const notify = useCallback((msg: string) => {
+        // Normalize message classification
+        const lower = msg.toLowerCase();
+        if (lower.includes("pasting")) {
+            // Start / update loading toast
+            if (inFlightToastIdRef.current == null) {
+                inFlightToastIdRef.current = toast.loading(msg);
+            } else {
+                toast.loading(msg, { id: inFlightToastIdRef.current });
+            }
+            return;
+        }
+        const isSuccess = /(pasted|copied)/i.test(msg) && !/failed|blocked|unavailable/i.test(msg);
+        const isError = /failed|blocked|unavailable/.test(lower);
+        const opts: any = inFlightToastIdRef.current != null ? { id: inFlightToastIdRef.current } : {};
+        if (isSuccess) {
+            toast.success(msg, opts);
+        } else if (isError) {
+            toast.error(msg, opts);
+        } else {
+            toast(msg, opts);
+        }
+        if (inFlightToastIdRef.current != null) inFlightToastIdRef.current = null;
+    }, []);
 
     const getTargetPoint = useCallback((): fabric.Point => {
         const canvas = fabricCanvasRef.current!;
@@ -34,7 +62,7 @@ export const useFabricCanvas = (): FabricCanvasHook => {
         if (!activeObject) return;
         const cloned: any = await (activeObject as any).clone();
         clipboardRef.current = classifyClipboardObject(cloned);
-        await copyToSystemClipboard(activeObject, (s) => setClipboardStatus(s));
+        await copyToSystemClipboard(activeObject, notify);
     }, []);
 
     const cut = useCallback(async () => {
@@ -43,7 +71,7 @@ export const useFabricCanvas = (): FabricCanvasHook => {
         if (!activeObject) return;
         const cloned: any = await (activeObject as any).clone();
         clipboardRef.current = classifyClipboardObject(cloned);
-        await copyToSystemClipboard(activeObject, (s) => setClipboardStatus(s));
+        await copyToSystemClipboard(activeObject, notify);
         if ((activeObject as any).type === "activeSelection") {
             (activeObject as any).forEachObject((obj: fabric.Object) => canvas.remove(obj));
         } else {
@@ -51,7 +79,7 @@ export const useFabricCanvas = (): FabricCanvasHook => {
         }
         canvas.discardActiveObject();
         canvas.requestRenderAll();
-    }, []);
+    }, [notify]);
 
     const paste = useCallback(async () => {
         const canvas = fabricCanvasRef.current; if (!canvas) return;
@@ -59,9 +87,9 @@ export const useFabricCanvas = (): FabricCanvasHook => {
         const didSystem = await tryReadFromSystemClipboard(
             canvas,
             targetPoint,
-            (s) => setClipboardStatus(s),
-            async (blob) => addImageBlob(canvas, blob, targetPoint, (s) => setClipboardStatus(s)),
-            async (svg) => addSVGString(canvas, svg, targetPoint)
+            notify,
+            async (blob) => addImageBlob(canvas, blob, targetPoint, notify),
+            async (svg) => { await addSVGString(canvas, svg, targetPoint); /* notify handled inside tryReadFromSystemClipboard */ }
         );
         if (didSystem) return;
         const entry = clipboardRef.current;
@@ -85,7 +113,7 @@ export const useFabricCanvas = (): FabricCanvasHook => {
             canvas.setActiveObject(clonedObj);
         }
         canvas.requestRenderAll();
-    }, [getTargetPoint]);
+    }, [getTargetPoint, notify]);
 
     // Initialization + events
     useEffect(() => {
@@ -112,19 +140,20 @@ export const useFabricCanvas = (): FabricCanvasHook => {
             const key = e.key.toLowerCase();
             if (key === "c") { e.preventDefault(); copy(); }
             else if (key === "x") { e.preventDefault(); cut(); }
-            else if (key === "v") { e.preventDefault(); paste(); }
+            else if (key === "v") { e.preventDefault(); suppressNextDomPasteRef.current = true; paste(); }
         };
         window.addEventListener("keydown", handleKeydown);
 
         const handlePasteEvent = async (e: ClipboardEvent) => {
+            if (suppressNextDomPasteRef.current) { suppressNextDomPasteRef.current = false; return; }
             if (!e.clipboardData) return; const dt = e.clipboardData; const target = getTargetPoint();
             for (const item of Array.from(dt.items)) {
-                if (item.type.startsWith("image/")) { const file = item.getAsFile(); if (file) { e.preventDefault(); await addImageBlob(canvas, file, target, (s) => setClipboardStatus(s)); return; } }
+                if (item.type.startsWith("image/")) { const file = item.getAsFile(); if (file) { e.preventDefault(); await addImageBlob(canvas, file, target, notify); return; } }
             }
             const html = dt.getData("text/html");
-            if (html) { const match = html.match(/<svg[\s\S]*?<\/svg>/i); if (match) { e.preventDefault(); await addSVGString(canvas, match[0], target); setClipboardStatus("Pasted SVG"); return; } }
+            if (html) { const match = html.match(/<svg[\s\S]*?<\/svg>/i); if (match) { e.preventDefault(); await addSVGString(canvas, match[0], target); notify("Pasted SVG"); return; } }
             const txt = dt.getData("text/plain");
-            if (txt && /^\s*<svg[\s\S]*<\/svg>\s*$/i.test(txt)) { e.preventDefault(); await addSVGString(canvas, txt, target); setClipboardStatus("Pasted SVG"); }
+            if (txt && /^\s*<svg[\s\S]*<\/svg>\s*$/i.test(txt)) { e.preventDefault(); await addSVGString(canvas, txt, target); notify("Pasted SVG"); }
         };
         window.addEventListener("paste", handlePasteEvent);
 
@@ -134,11 +163,11 @@ export const useFabricCanvas = (): FabricCanvasHook => {
             opt.e.preventDefault(); opt.e.stopPropagation();
         });
         canvas.on("mouse:down", (opt) => {
-            const e = opt.e as any; const pt = canvas.getPointer(e); lastPointerRef.current = new fabric.Point(pt.x, pt.y);
+            const e = opt.e as any; const pt = canvas.getScenePoint(e); lastPointerRef.current = new fabric.Point(pt.x, pt.y);
             if (e && e.altKey) { (canvas as any).isDragging = true; canvas.selection = false; (canvas as any).lastPosX = e.clientX; (canvas as any).lastPosY = e.clientY; }
         });
         canvas.on("mouse:move", (opt) => {
-            const e = opt.e as any; if (e) { const pt = canvas.getPointer(e); lastPointerRef.current = new fabric.Point(pt.x, pt.y); }
+            const e = opt.e as any; if (e) { const pt = canvas.getScenePoint(e); lastPointerRef.current = new fabric.Point(pt.x, pt.y); }
             if (!(canvas as any).isDragging || !e) return; const vpt = canvas.viewportTransform; if (vpt) { vpt[4] += e.clientX - (canvas as any).lastPosX; vpt[5] += e.clientY - (canvas as any).lastPosY; canvas.requestRenderAll(); }
             (canvas as any).lastPosX = e.clientX; (canvas as any).lastPosY = e.clientY;
         });
@@ -151,12 +180,7 @@ export const useFabricCanvas = (): FabricCanvasHook => {
             canvas.dispose();
             fabricCanvasRef.current = null;
         };
-    }, [copy, cut, paste, getTargetPoint]);
+    }, [copy, cut, paste, getTargetPoint, notify]);
 
-    // Auto-hide clipboard status
-    useEffect(() => {
-        if (clipboardStatus) { const id = setTimeout(() => setClipboardStatus(null), 2000); return () => clearTimeout(id); }
-    }, [clipboardStatus]);
-
-    return { canvasRef: canvasRef as React.RefObject<HTMLCanvasElement>, clipboardStatus, copy, cut, paste, getCanvas: () => fabricCanvasRef.current };
+    return { canvasRef: canvasRef as React.RefObject<HTMLCanvasElement>, copy, cut, paste, getCanvas: () => fabricCanvasRef.current };
 };
