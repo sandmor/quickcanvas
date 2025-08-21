@@ -3,6 +3,7 @@ import { create } from "zustand";
 import { CanvasTool } from "@/hooks/useFabricCanvas";
 import type * as fabric from "fabric";
 import { toast } from "sonner";
+import { stableHash } from "@/lib/utils";
 
 // Representation of a gallery resource (persisted in-memory for now)
 // We store: id, kind, a lightweight preview (dataURL), and a serialized object JSON
@@ -11,6 +12,7 @@ export interface GalleryItem {
     kind: "image" | "object" | "selection" | "unknown";
     preview: string; // data URL (png) used as thumbnail
     payload: any; // fabric JSON representation (object or array for selection)
+    checksum: string; // stable hash for dedupe
     addedAt: number;
 }
 
@@ -44,6 +46,21 @@ export const useMainStore = create<Mainstore>()((set, get) => ({
         } else {
             payload = serialize(obj);
         }
+        // Compute checksum for payload to detect duplicates; ignore transient meta.
+        let checksum = '';
+        try { checksum = await stableHash(payload); } catch (e) { console.warn("stableHash failed", e); }
+        if (checksum) {
+            const existing = get().gallery.find(g => g.checksum === checksum);
+            if (existing) {
+                // Move existing to front, update timestamp; no duplicate insertion.
+                const remainder = get().gallery.filter(g => g.id !== existing.id);
+                const bumped = { ...existing, addedAt: Date.now() };
+                set({ gallery: [bumped, ...remainder].slice(0, 200) });
+                // Use toast.message if available else generic toast
+                (toast as any).message?.("Resource already in gallery – bumped to top") || toast("Resource already in gallery – bumped to top");
+                return;
+            }
+        }
         // Generate thumbnail PNG
         const canvasEl = document.createElement('canvas');
         const fabricCanvas = (obj.canvas || (obj as any)._canvas) as fabric.Canvas | undefined;
@@ -65,7 +82,7 @@ export const useMainStore = create<Mainstore>()((set, get) => ({
             console.warn("Thumbnail generation failed", e);
             toast.error("Couldn't generate preview thumbnail. Object still added.");
         }
-        const newItem: GalleryItem = { id: genId(), kind, preview: dataUrl, payload, addedAt: Date.now() };
+        const newItem: GalleryItem = { id: genId(), kind, preview: dataUrl, payload, checksum, addedAt: Date.now() };
         set({ gallery: [newItem, ...get().gallery].slice(0, 200) }); // cap to 200 to avoid unbounded growth
     },
     clearGallery: () => set({ gallery: [] }),
