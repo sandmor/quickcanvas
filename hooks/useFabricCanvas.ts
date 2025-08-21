@@ -6,6 +6,7 @@ import { addImageBlob, addSVGString, copyToSystemClipboard, tryReadFromSystemCli
 import { addObjectsAsSelection, centerObjectAt, getCanvasCenterWorld } from "@/lib/fabric/utils";
 import { classifyClipboardObject, FabricClipboardEntry } from "@/lib/fabric/types";
 import { toast } from "sonner";
+import { useMainStore } from "@/store/mainStore";
 
 export interface FabricCanvasHook {
     canvasRef: React.RefObject<HTMLCanvasElement>;
@@ -13,7 +14,11 @@ export interface FabricCanvasHook {
     cut: () => Promise<void>;
     paste: () => Promise<void>;
     getCanvas: () => fabric.Canvas | null;
+    tool: CanvasTool;
+    setTool: (t: CanvasTool) => void;
 }
+
+export type CanvasTool = "pointer" | "rect" | "circle";
 
 export const useFabricCanvas = (): FabricCanvasHook => {
     // Use explicit possibly-null element ref but cast on return to align with consumer expectations
@@ -25,6 +30,11 @@ export const useFabricCanvas = (): FabricCanvasHook => {
     const inFlightToastIdRef = useRef<string | number | null>(null);
     // Suppress DOM paste handler if we've already handled via programmatic paste (Ctrl/Cmd+V)
     const suppressNextDomPasteRef = useRef(false);
+
+    const tool = useMainStore(s => s.tool);
+    const setTool = useMainStore(s => s.setTool);
+    const toolRef = useRef<CanvasTool>(tool);
+    useEffect(() => { toolRef.current = tool; }, [tool]);
 
     const notify = useCallback((msg: string) => {
         // Normalize message classification
@@ -115,6 +125,24 @@ export const useFabricCanvas = (): FabricCanvasHook => {
         canvas.requestRenderAll();
     }, [getTargetPoint, notify]);
 
+    // Helper to insert shape at last pointer (or canvas center) and return to pointer tool
+    const spawnShapeAt = useCallback((kind: Exclude<CanvasTool, "pointer">) => {
+        const canvas = fabricCanvasRef.current; if (!canvas) return;
+        const target = getTargetPoint();
+        let obj: fabric.Object | null = null;
+        if (kind === "rect") {
+            obj = new fabric.Rect({ width: 160, height: 100, fill: "#2563eb", rx: 4, ry: 4 });
+        } else if (kind === "circle") {
+            obj = new fabric.Circle({ radius: 60, fill: "#16a34a" });
+        }
+        if (!obj) return;
+        centerObjectAt(obj as any, target);
+        canvas.add(obj);
+        canvas.setActiveObject(obj);
+        canvas.requestRenderAll();
+        setTool("pointer");
+    }, [getTargetPoint]);
+
     // Initialization + events
     useEffect(() => {
         if (!canvasRef.current) return;
@@ -126,6 +154,7 @@ export const useFabricCanvas = (): FabricCanvasHook => {
             selection: false,
         });
         fabricCanvasRef.current = canvas;
+        // external canvas store linkage removed
         (canvas as any).isDragging = false; (canvas as any).lastPosX = 0; (canvas as any).lastPosY = 0;
 
         // Demo objects
@@ -136,8 +165,14 @@ export const useFabricCanvas = (): FabricCanvasHook => {
         window.addEventListener("resize", handleResize);
 
         const handleKeydown = (e: KeyboardEvent) => {
-            const meta = e.ctrlKey || e.metaKey; if (!meta) return;
             const key = e.key.toLowerCase();
+            // Tool hotkeys (no modifier) mimic design app conventions
+            if (!e.metaKey && !e.ctrlKey && !e.altKey) {
+                if (key === "v" || key === "escape") { setTool("pointer"); }
+                else if (key === "r") { setTool("rect"); }
+                else if (key === "c") { setTool("circle"); }
+            }
+            const meta = e.ctrlKey || e.metaKey; if (!meta) return;
             if (key === "c") { e.preventDefault(); copy(); }
             else if (key === "x") { e.preventDefault(); cut(); }
             else if (key === "v") { e.preventDefault(); suppressNextDomPasteRef.current = true; paste(); }
@@ -165,6 +200,11 @@ export const useFabricCanvas = (): FabricCanvasHook => {
         canvas.on("mouse:down", (opt) => {
             const e = opt.e as any; const pt = canvas.getScenePoint(e); lastPointerRef.current = new fabric.Point(pt.x, pt.y);
             if (e && e.altKey) { (canvas as any).isDragging = true; canvas.selection = false; (canvas as any).lastPosX = e.clientX; (canvas as any).lastPosY = e.clientY; }
+            // Tool insertion (only on primary button, ignore drags / gestures)
+            const activeTool = toolRef.current;
+            if (activeTool !== "pointer" && e && e.button === 0) {
+                spawnShapeAt(activeTool as Exclude<CanvasTool, "pointer">);
+            }
         });
         canvas.on("mouse:move", (opt) => {
             const e = opt.e as any; if (e) { const pt = canvas.getScenePoint(e); lastPointerRef.current = new fabric.Point(pt.x, pt.y); }
@@ -178,9 +218,10 @@ export const useFabricCanvas = (): FabricCanvasHook => {
             window.removeEventListener("keydown", handleKeydown);
             window.removeEventListener("paste", handlePasteEvent);
             canvas.dispose();
+            // external canvas store linkage removed
             fabricCanvasRef.current = null;
         };
-    }, [copy, cut, paste, getTargetPoint, notify]);
+    }, [copy, cut, paste, getTargetPoint, notify, spawnShapeAt]);
 
-    return { canvasRef: canvasRef as React.RefObject<HTMLCanvasElement>, copy, cut, paste, getCanvas: () => fabricCanvasRef.current };
+    return { canvasRef: canvasRef as React.RefObject<HTMLCanvasElement>, copy, cut, paste, getCanvas: () => fabricCanvasRef.current, tool, setTool };
 };
