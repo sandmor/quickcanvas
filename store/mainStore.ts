@@ -2,6 +2,7 @@
 import { create } from "zustand";
 import { CanvasTool } from "@/hooks/useFabricCanvas";
 import type * as fabric from "fabric";
+import { toast } from "sonner";
 
 // Representation of a gallery resource (persisted in-memory for now)
 // We store: id, kind, a lightweight preview (dataURL), and a serialized object JSON
@@ -61,7 +62,8 @@ export const useMainStore = create<Mainstore>()((set, get) => ({
                 dataUrl = canvasEl.toDataURL('image/png');
             }
         } catch (e) {
-            // swallow
+            console.warn("Thumbnail generation failed", e);
+            toast.error("Couldn't generate preview thumbnail. Object still added.");
         }
         const newItem: GalleryItem = { id: genId(), kind, preview: dataUrl, payload, addedAt: Date.now() };
         set({ gallery: [newItem, ...get().gallery].slice(0, 200) }); // cap to 200 to avoid unbounded growth

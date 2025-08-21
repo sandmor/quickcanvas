@@ -11,6 +11,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from "./ui/dro
 import { ScrollArea } from "./ui/scroll-area";
 import { Separator } from "./ui/separator";
 import { HoverCard, HoverCardTrigger, HoverCardContent } from "./ui/hover-card";
+import { toast } from "sonner";
 
 export const Toolbar = () => {
     const tool = useMainStore(s => s.tool);
@@ -51,7 +52,10 @@ export const Toolbar = () => {
         const descriptors = Array.isArray(item.payload) ? item.payload : [item.payload];
         Promise.resolve((fabric.util as any).enlivenObjects(descriptors))
             .then((objs: fabric.Object[]) => addAndCenter(objs))
-            .catch(() => { /* swallow; invalid payload */ });
+            .catch((err: unknown) => {
+                console.warn("Failed to insert gallery resource", { err, item });
+                toast.error("Failed to insert resource – it may be invalid or incompatible.");
+            });
     }, [gallery]);
 
     return (

@@ -1,76 +1,76 @@
 import * as fabric from "fabric";
 import { addObjectsAsSelection, centerObjectAt } from "./utils";
 import { exportSelectionToPNGBlob, exportSelectionToSVGString } from "./export";
+import { toast } from "sonner";
 
-/** Parse and add an SVG string to the canvas at target point */
-export const addSVGString = (canvas: fabric.Canvas, rawSvg: string, target: fabric.Point): Promise<void> =>
-    new Promise<void>(async (resolve, reject) => {
-        try {
-            const sanitized = rawSvg
-                .replace(/<\?xml[^>]*?>/gi, "")
-                .replace(/<!DOCTYPE[^>]*?>/gi, "")
-                .trim();
+/** Parse and add an SVG string to the canvas at target point. Emits a toast on failure and never rejects. */
+export const addSVGString = async (canvas: fabric.Canvas, rawSvg: string, target: fabric.Point): Promise<void> => {
+    try {
+        const sanitized = rawSvg
+            .replace(/<\?xml[^>]*?>/gi, "")
+            .replace(/<!DOCTYPE[^>]*?>/gi, "")
+            .trim();
 
-            const parsed: any = await fabric.loadSVGFromString(sanitized);
-            let objects: any[] = [];
-            if (parsed) {
-                if (Array.isArray(parsed.objects)) objects = parsed.objects;
-                else if (Array.isArray(parsed)) objects = parsed;
-            }
-            if (!objects.length) {
-                resolve();
-                return;
-            }
-
-            const styleMap: Record<string, Record<string, string>> = {};
-            const tagRegex = /<([a-zA-Z0-9:_-]+)([^>]*)>/g;
-            let m: RegExpExecArray | null;
-            while ((m = tagRegex.exec(sanitized))) {
-                const attrs = m[2];
-                const idMatch = attrs.match(/id=("|')([^"']+)("')/i);
-                const styleMatch = attrs.match(/style=("|')([^"']+)("')/i);
-                if (idMatch && styleMatch) {
-                    const id = idMatch[2];
-                    const styleDecls: Record<string, string> = {};
-                    styleMatch[2].split(/;+/).forEach((decl) => {
-                        const [k, v] = decl.split(":").map((s) => s && s.trim());
-                        if (k && v) styleDecls[k] = v;
-                    });
-                    styleMap[id] = styleDecls;
-                }
-            }
-
-            objects.forEach((obj: any) => {
-                const oid = obj.id || obj.name || obj._id;
-                if (oid && styleMap[oid]) {
-                    const st = styleMap[oid];
-                    if (st.fill && (obj.fill == null || obj.fill === "")) obj.set("fill", st.fill);
-                    if (st.stroke && (obj.stroke == null || obj.stroke === "")) obj.set("stroke", st.stroke);
-                    if (st["stroke-width"] && (obj.strokeWidth == null || isNaN(obj.strokeWidth))) {
-                        const sw = parseFloat(st["stroke-width"]);
-                        if (!isNaN(sw)) obj.set("strokeWidth", sw);
-                    }
-                    if (st.opacity && (obj.opacity == null)) {
-                        const op = parseFloat(st.opacity);
-                        if (!isNaN(op)) obj.set("opacity", op);
-                    }
-                }
-                obj.set({ evented: true });
-                canvas.add(obj);
-            });
-
-            if (objects.length === 1) {
-                centerObjectAt(objects[0], target);
-                canvas.setActiveObject(objects[0]);
-            } else {
-                addObjectsAsSelection(objects, canvas, target);
-            }
-            canvas.requestRenderAll();
-            resolve();
-        } catch (err) {
-            reject(err);
+        const parsed: any = await fabric.loadSVGFromString(sanitized);
+        let objects: any[] = [];
+        if (parsed) {
+            if (Array.isArray(parsed.objects)) objects = parsed.objects;
+            else if (Array.isArray(parsed)) objects = parsed;
         }
-    });
+        if (!objects.length) {
+            toast.error("SVG contained no drawable objects");
+            return;
+        }
+
+        const styleMap: Record<string, Record<string, string>> = {};
+        const tagRegex = /<([a-zA-Z0-9:_-]+)([^>]*)>/g;
+        let m: RegExpExecArray | null;
+        while ((m = tagRegex.exec(sanitized))) {
+            const attrs = m[2];
+            const idMatch = attrs.match(/id=("|')([^"']+)("')/i);
+            const styleMatch = attrs.match(/style=("|')([^"']+)("')/i);
+            if (idMatch && styleMatch) {
+                const id = idMatch[2];
+                const styleDecls: Record<string, string> = {};
+                styleMatch[2].split(/;+/).forEach((decl) => {
+                    const [k, v] = decl.split(":").map((s) => s && s.trim());
+                    if (k && v) styleDecls[k] = v;
+                });
+                styleMap[id] = styleDecls;
+            }
+        }
+
+        objects.forEach((obj: any) => {
+            const oid = obj.id || obj.name || obj._id;
+            if (oid && styleMap[oid]) {
+                const st = styleMap[oid];
+                if (st.fill && (obj.fill == null || obj.fill === "")) obj.set("fill", st.fill);
+                if (st.stroke && (obj.stroke == null || obj.stroke === "")) obj.set("stroke", st.stroke);
+                if (st["stroke-width"] && (obj.strokeWidth == null || isNaN(obj.strokeWidth))) {
+                    const sw = parseFloat(st["stroke-width"]);
+                    if (!isNaN(sw)) obj.set("strokeWidth", sw);
+                }
+                if (st.opacity && (obj.opacity == null)) {
+                    const op = parseFloat(st.opacity);
+                    if (!isNaN(op)) obj.set("opacity", op);
+                }
+            }
+            obj.set({ evented: true });
+            canvas.add(obj);
+        });
+
+        if (objects.length === 1) {
+            centerObjectAt(objects[0], target);
+            canvas.setActiveObject(objects[0]);
+        } else {
+            addObjectsAsSelection(objects, canvas, target);
+        }
+        canvas.requestRenderAll();
+    } catch (err) {
+        console.warn("Failed to parse / add SVG", err);
+        toast.error("Failed to paste SVG – content may be invalid.");
+    }
+};
 
 export const addImageBlob = async (
     canvas: fabric.Canvas,
