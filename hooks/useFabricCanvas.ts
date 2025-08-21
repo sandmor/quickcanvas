@@ -3,7 +3,7 @@
 import { useEffect, useRef, useCallback } from "react";
 import * as fabric from "fabric";
 import { addImageBlob, addSVGString, copyToSystemClipboard, tryReadFromSystemClipboard } from "@/lib/fabric/clipboard";
-import { addObjectsAsSelection, centerObjectAt, getCanvasCenterWorld } from "@/lib/fabric/utils";
+import { addObjectsAsSelection, centerObjectAt, getCanvasCenterWorld, centerInViewport } from "@/lib/fabric/utils";
 import { classifyClipboardObject, FabricClipboardEntry } from "@/lib/fabric/types";
 import { toast } from "sonner";
 import { useMainStore } from "@/store/mainStore";
@@ -33,6 +33,7 @@ export const useFabricCanvas = (): FabricCanvasHook => {
 
     const tool = useMainStore(s => s.tool);
     const setTool = useMainStore(s => s.setTool);
+    const addToGallery = useMainStore(s => s.addToGallery);
     const toolRef = useRef<CanvasTool>(tool);
     useEffect(() => { toolRef.current = tool; }, [tool]);
 
@@ -98,8 +99,8 @@ export const useFabricCanvas = (): FabricCanvasHook => {
             canvas,
             targetPoint,
             notify,
-            async (blob) => addImageBlob(canvas, blob, targetPoint, notify),
-            async (svg) => { await addSVGString(canvas, svg, targetPoint); /* notify handled inside tryReadFromSystemClipboard */ }
+            async (blob) => { await addImageBlob(canvas, blob, targetPoint, notify); const obj = canvas.getActiveObject(); if (obj) addToGallery(obj as any); },
+            async (svg) => { await addSVGString(canvas, svg, targetPoint); const obj = canvas.getActiveObject(); if (obj) addToGallery(obj as any); /* notify handled inside tryReadFromSystemClipboard */ }
         );
         if (didSystem) return;
         const entry = clipboardRef.current;
@@ -114,13 +115,15 @@ export const useFabricCanvas = (): FabricCanvasHook => {
                 canvas.add(obj); pasted.push(obj);
             });
             const selection = new (fabric as any).ActiveSelection(pasted, { canvas });
-            centerObjectAt(selection, targetPoint);
+            centerObjectAt(selection, targetPoint); // still respect pointer if available
             canvas.setActiveObject(selection);
+            addToGallery(selection as any);
         } else if (entry.kind === "image" || entry.kind === "object") {
             clonedObj.set({ evented: true });
             centerObjectAt(clonedObj, targetPoint);
             canvas.add(clonedObj);
             canvas.setActiveObject(clonedObj);
+            addToGallery(clonedObj as any);
         }
         canvas.requestRenderAll();
     }, [getTargetPoint, notify]);
@@ -128,6 +131,7 @@ export const useFabricCanvas = (): FabricCanvasHook => {
     // Helper to insert shape at last pointer (or canvas center) and return to pointer tool
     const spawnShapeAt = useCallback((kind: Exclude<CanvasTool, "pointer">) => {
         const canvas = fabricCanvasRef.current; if (!canvas) return;
+        // Use last pointer if present else viewport center (world space)
         const target = getTargetPoint();
         let obj: fabric.Object | null = null;
         if (kind === "rect") {
@@ -154,6 +158,7 @@ export const useFabricCanvas = (): FabricCanvasHook => {
             selection: false,
         });
         fabricCanvasRef.current = canvas;
+        (window as any).fabricCanvas = canvas;
         // external canvas store linkage removed
         (canvas as any).isDragging = false; (canvas as any).lastPosX = 0; (canvas as any).lastPosY = 0;
 
@@ -183,12 +188,12 @@ export const useFabricCanvas = (): FabricCanvasHook => {
             if (suppressNextDomPasteRef.current) { suppressNextDomPasteRef.current = false; return; }
             if (!e.clipboardData) return; const dt = e.clipboardData; const target = getTargetPoint();
             for (const item of Array.from(dt.items)) {
-                if (item.type.startsWith("image/")) { const file = item.getAsFile(); if (file) { e.preventDefault(); await addImageBlob(canvas, file, target, notify); return; } }
+                if (item.type.startsWith("image/")) { const file = item.getAsFile(); if (file) { e.preventDefault(); await addImageBlob(canvas, file, target, notify); const obj = canvas.getActiveObject(); if (obj) addToGallery(obj as any); return; } }
             }
             const html = dt.getData("text/html");
-            if (html) { const match = html.match(/<svg[\s\S]*?<\/svg>/i); if (match) { e.preventDefault(); await addSVGString(canvas, match[0], target); notify("Pasted SVG"); return; } }
+            if (html) { const match = html.match(/<svg[\s\S]*?<\/svg>/i); if (match) { e.preventDefault(); await addSVGString(canvas, match[0], target); notify("Pasted SVG"); const obj = canvas.getActiveObject(); if (obj) addToGallery(obj as any); return; } }
             const txt = dt.getData("text/plain");
-            if (txt && /^\s*<svg[\s\S]*<\/svg>\s*$/i.test(txt)) { e.preventDefault(); await addSVGString(canvas, txt, target); notify("Pasted SVG"); }
+            if (txt && /^\s*<svg[\s\S]*<\/svg>\s*$/i.test(txt)) { e.preventDefault(); await addSVGString(canvas, txt, target); notify("Pasted SVG"); const obj = canvas.getActiveObject(); if (obj) addToGallery(obj as any); }
         };
         window.addEventListener("paste", handlePasteEvent);
 
@@ -221,7 +226,7 @@ export const useFabricCanvas = (): FabricCanvasHook => {
             // external canvas store linkage removed
             fabricCanvasRef.current = null;
         };
-    }, [copy, cut, paste, getTargetPoint, notify, spawnShapeAt]);
+    }, [copy, cut, paste, getTargetPoint, notify, spawnShapeAt, addToGallery]);
 
     return { canvasRef: canvasRef as React.RefObject<HTMLCanvasElement>, copy, cut, paste, getCanvas: () => fabricCanvasRef.current, tool, setTool };
 };
