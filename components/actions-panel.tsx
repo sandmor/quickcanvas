@@ -3,7 +3,8 @@
 import React, { useCallback, useState } from "react";
 import * as fabric from "fabric";
 import { Button } from "@/components/ui/button";
-import { Trash2, PaintBucket, ChevronDown, Layers, ArrowUp, ArrowDown, ArrowUpToLine, ArrowDownToLine } from "lucide-react";
+import { Input } from "@/components/ui/input";
+import { Trash2, PaintBucket, ChevronDown, Layers, ArrowUp, ArrowDown, ArrowUpToLine, ArrowDownToLine, Link2, Link2Off } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useMainStore } from "@/store/mainStore";
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
@@ -15,11 +16,33 @@ import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip
 export const ActionsPanel: React.FC = () => {
     const selection = useMainStore(s => s.selection);
     const applyFillToSelection = useMainStore(s => s.applyFillToSelection);
+    const applyRectCornerRadiusToSelection = useMainStore(s => s.applyRectCornerRadiusToSelection);
     const deleteSelection = useMainStore(s => s.deleteSelection);
     const bringForward = useMainStore(s => s.bringForward);
     const sendBackward = useMainStore(s => s.sendBackward);
     const bringToFront = useMainStore(s => s.bringToFront);
     const sendToBack = useMainStore(s => s.sendToBack);
+
+    // Local lock + transient input states for corner radii (must be before any conditional return)
+    const [lockRadius, setLockRadius] = React.useState(true);
+    const rectRx = selection.shape?.kind === 'rect' ? selection.shape?.rect?.rx : null;
+    const rectRy = selection.shape?.kind === 'rect' ? selection.shape?.rect?.ry : null;
+    const [tempRx, setTempRx] = React.useState<string>('');
+    const [tempRy, setTempRy] = React.useState<string>('');
+    React.useEffect(() => { // sync when selection changes
+        if (rectRx != null) setTempRx(String(rectRx)); else setTempRx('');
+        if (rectRy != null) setTempRy(String(rectRy)); else setTempRy('');
+    }, [rectRx, rectRy, selection.shape?.kind]);
+    const commitRadius = (which: 'rx' | 'ry', valueStr: string, record = false) => {
+        const canvas = window.fabricCanvas as fabric.Canvas | undefined; if (!canvas) return;
+        const num = parseFloat(valueStr);
+        if (isNaN(num)) return; // ignore invalid
+        if (lockRadius) {
+            applyRectCornerRadiusToSelection(canvas, { rx: num, ry: num }, { record });
+        } else {
+            if (which === 'rx') applyRectCornerRadiusToSelection(canvas, { rx: num }, { record }); else applyRectCornerRadiusToSelection(canvas, { ry: num }, { record });
+        }
+    };
 
     const applyFill = useCallback((color: string) => {
         const canvas = window.fabricCanvas; if (!canvas) return;
@@ -111,6 +134,46 @@ export const ActionsPanel: React.FC = () => {
                     <span className="text-[11px] font-medium tracking-wide text-muted-foreground">Fill</span>
                     {palette}
                 </div>
+                {selection.shape?.kind === 'rect' && (
+                    <div className="flex flex-col gap-1.5">
+                        <div className="flex items-center justify-between">
+                            <span className="text-[11px] font-medium tracking-wide text-muted-foreground">Corners</span>
+                            <button
+                                type="button"
+                                aria-label={lockRadius ? 'Unlock aspect' : 'Lock aspect'}
+                                onClick={() => setLockRadius(l => !l)}
+                                className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-border/60 bg-background/40 hover:bg-accent hover:text-accent-foreground transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                            >
+                                {lockRadius ? <Link2 className="h-3.5 w-3.5" /> : <Link2Off className="h-3.5 w-3.5" />}
+                            </button>
+                        </div>
+                        <div className="grid grid-cols-2 gap-1.5">
+                            <Input
+                                type="number"
+                                min={0}
+                                step={1}
+                                value={tempRx}
+                                placeholder={rectRx == null ? '—' : undefined}
+                                onChange={e => { const v = e.target.value; setTempRx(v); if (lockRadius) setTempRy(v); if (v !== '' && !isNaN(Number(v))) commitRadius('rx', v, false); }}
+                                onBlur={e => commitRadius('rx', e.target.value, true)}
+                                className="h-8 text-xs px-2"
+                                aria-label="Horizontal corner radius"
+                            />
+                            <Input
+                                type="number"
+                                min={0}
+                                step={1}
+                                value={tempRy}
+                                placeholder={rectRy == null ? '—' : undefined}
+                                onChange={e => { const v = e.target.value; setTempRy(v); if (lockRadius) setTempRx(v); if (!lockRadius && v !== '' && !isNaN(Number(v))) commitRadius('ry', v, false); }}
+                                onBlur={e => commitRadius('ry', e.target.value, true)}
+                                disabled={lockRadius}
+                                className="h-8 text-xs px-2 disabled:opacity-60"
+                                aria-label="Vertical corner radius"
+                            />
+                        </div>
+                    </div>
+                )}
                 <div className="flex flex-col gap-2">
                     <span className="text-[11px] font-medium tracking-wide text-muted-foreground">Layer</span>
                     <div className="grid grid-cols-2 gap-1">
@@ -196,6 +259,7 @@ export const ActionsPanelMobile: React.FC = () => {
     const [open, setOpen] = useState(false);
     const selection = useMainStore(s => s.selection);
     const applyFillToSelection = useMainStore(s => s.applyFillToSelection);
+    const applyRectCornerRadiusToSelection = useMainStore(s => s.applyRectCornerRadiusToSelection);
     const deleteSelection = useMainStore(s => s.deleteSelection);
     const bringForward = useMainStore(s => s.bringForward);
     const sendBackward = useMainStore(s => s.sendBackward);
@@ -251,6 +315,9 @@ export const ActionsPanelMobile: React.FC = () => {
                 {open && (
                     <>
                         <ColorPicker value={selection.fill || "#000000"} onChange={applyFill} swatches={CANVAS_COLOR_SWATCHES} showTriggerButton={false} />
+                        {selection.shape?.kind === 'rect' && (
+                            <CornerRadiusMobileControls selection={selection} applyRectCornerRadiusToSelection={applyRectCornerRadiusToSelection} />
+                        )}
                         <div className="grid grid-cols-4 gap-1">
                             <Button variant="secondary" size="sm" disabled={layerDisables.bfwd} onClick={() => { const c = window.fabricCanvas; c && bringToFront(c); }} aria-label="Bring to front" className={cn("h-8 px-0 transition-transform hover:shadow-sm active:scale-[0.94]", layerDisables.bfwd && "opacity-50")}> <ArrowUpToLine className="h-4 w-4" /></Button>
                             <Button variant="secondary" size="sm" disabled={layerDisables.fwd} onClick={() => { const c = window.fabricCanvas; c && bringForward(c); }} aria-label="Bring forward" className={cn("h-8 px-0 transition-transform hover:shadow-sm active:scale-[0.94]", layerDisables.fwd && "opacity-50")}> <ArrowUp className="h-4 w-4" /></Button>
@@ -273,3 +340,75 @@ export default function CombinedActionsPanel() {
         <ActionsPanelMobile />
     </>;
 }
+
+// Mobile-specific rectangle corner radius controls (kept separate for clarity & responsive concerns)
+interface SelectionState {
+    has: boolean;
+    type: string | null;
+    editingText: boolean;
+    fill: string | null;
+    shape?: {
+        kind: string;
+        rect?: { rx: number | null; ry: number | null };
+    } | null;
+}
+const CornerRadiusMobileControls: React.FC<{ selection: SelectionState; applyRectCornerRadiusToSelection: (canvas: fabric.Canvas, r: { rx?: number; ry?: number }, opts?: { record?: boolean }) => void; }> = ({ selection, applyRectCornerRadiusToSelection }) => {
+    const rectRx = selection.shape?.kind === 'rect' ? selection.shape?.rect?.rx : null;
+    const rectRy = selection.shape?.kind === 'rect' ? selection.shape?.rect?.ry : null;
+    const [lockRadius, setLockRadius] = React.useState(true);
+    const [tempRx, setTempRx] = React.useState<string>('');
+    const [tempRy, setTempRy] = React.useState<string>('');
+    React.useEffect(() => {
+        if (rectRx != null) setTempRx(String(rectRx)); else setTempRx('');
+        if (rectRy != null) setTempRy(String(rectRy)); else setTempRy('');
+    }, [rectRx, rectRy, selection.shape?.kind]);
+    const commit = (which: 'rx' | 'ry', v: string, record = false) => {
+        const canvas = window.fabricCanvas as fabric.Canvas | undefined; if (!canvas) return;
+        const num = parseFloat(v); if (isNaN(num)) return;
+        if (lockRadius) {
+            applyRectCornerRadiusToSelection(canvas, { rx: num, ry: num }, { record });
+        } else {
+            if (which === 'rx') applyRectCornerRadiusToSelection(canvas, { rx: num }, { record }); else applyRectCornerRadiusToSelection(canvas, { ry: num }, { record });
+        }
+    };
+    return (
+        <div className="flex flex-col gap-1.5">
+            <div className="flex items-center justify-between">
+                <span className="text-[11px] font-medium tracking-wide text-muted-foreground">Corners</span>
+                <button
+                    type="button"
+                    aria-label={lockRadius ? 'Unlock aspect' : 'Lock aspect'}
+                    onClick={() => setLockRadius(l => !l)}
+                    className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-border/60 bg-background/40 hover:bg-accent hover:text-accent-foreground transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                >
+                    {lockRadius ? <Link2 className="h-4 w-4" /> : <Link2Off className="h-4 w-4" />}
+                </button>
+            </div>
+            <div className="grid grid-cols-2 gap-1.5">
+                <Input
+                    type="number"
+                    min={0}
+                    step={1}
+                    value={tempRx}
+                    placeholder={rectRx == null ? '—' : undefined}
+                    onChange={e => { const v = e.target.value; setTempRx(v); if (lockRadius) setTempRy(v); if (v !== '' && !isNaN(Number(v))) commit('rx', v, false); }}
+                    onBlur={e => commit('rx', e.target.value, true)}
+                    className="h-8 text-xs px-2"
+                    aria-label="Horizontal corner radius"
+                />
+                <Input
+                    type="number"
+                    min={0}
+                    step={1}
+                    value={tempRy}
+                    placeholder={rectRy == null ? '—' : undefined}
+                    onChange={e => { const v = e.target.value; setTempRy(v); if (lockRadius) setTempRx(v); if (!lockRadius && v !== '' && !isNaN(Number(v))) commit('ry', v, false); }}
+                    onBlur={e => commit('ry', e.target.value, true)}
+                    disabled={lockRadius}
+                    className="h-8 text-xs px-2 disabled:opacity-60"
+                    aria-label="Vertical corner radius"
+                />
+            </div>
+        </div>
+    );
+};

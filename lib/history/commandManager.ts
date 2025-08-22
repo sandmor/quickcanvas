@@ -191,3 +191,44 @@ export const recordReorder = async (
     await commandManager.perform(cmd, alreadyApplied);
 };
 
+export interface PropMutationState { qcId: string; props: Record<string, any>; }
+
+export const recordPropertyMutation = async (
+    canvas: fabric.Canvas,
+    before: PropMutationState[],
+    after: PropMutationState[],
+    label = 'Modify Properties',
+    alreadyApplied = true
+) => {
+    // Quick equality check – if every object's listed props have identical values, skip.
+    const changed = after.some(a => {
+        const b = before.find(x => x.qcId === a.qcId); if (!b) return true;
+        return Object.keys(a.props).some(k => a.props[k] !== b.props[k]);
+    });
+    if (!changed) return;
+    const apply = (states: PropMutationState[]) => {
+        states.forEach(st => {
+            const obj = canvas.getObjects().find(o => (o as any).qcId === st.qcId);
+            if (!obj) return;
+            try {
+                obj.set({ ...st.props });
+            } catch {
+                Object.entries(st.props).forEach(([k, v]) => {
+                    try { (obj as any).set?.(k, v); } catch { (obj as any)[k] = v; }
+                });
+            }
+            obj.setCoords();
+            canvas.fire('object:modified', { target: obj });
+        });
+        canvas.requestRenderAll();
+    };
+    const cmd: Command = {
+        id: Math.random().toString(36).slice(2),
+        label,
+        stamp: Date.now(),
+        execute: () => apply(after),
+        undo: () => apply(before)
+    };
+    await commandManager.perform(cmd, alreadyApplied);
+};
+

@@ -5,7 +5,7 @@ import { CanvasTool } from "@/types/canvas";
 import * as fabric from "fabric";
 import { toast } from "sonner";
 import { stableHash } from "@/lib/utils";
-import { recordReorder, ensureObjectId } from '@/lib/history/commandManager';
+import { recordReorder, ensureObjectId, recordPropertyMutation } from '@/lib/history/commandManager';
 
 // Representation of a gallery resource (persisted in-memory for now)
 // We store: id, kind, a lightweight preview (dataURL), and a serialized object JSON
@@ -41,9 +41,16 @@ interface Mainstore {
         type: string | null; // fabric object type or 'activeSelection'
         editingText: boolean;
         fill: string | null; // unified fill across selection or null if mixed / unsupported
+        // Shape-specific unified properties (extensible). Only populated when all selected objects share a shape kind.
+        shape?: {
+            kind: string; // e.g. 'rect', 'ellipse'
+            // Rectangle specific
+            rect?: { rx: number | null; ry: number | null };
+        } | null;
     };
     setSelectionFromCanvas: (canvas: fabric.Canvas) => void;
     applyFillToSelection: (canvas: fabric.Canvas, color: string) => void;
+    applyRectCornerRadiusToSelection: (canvas: fabric.Canvas, radius: { rx?: number; ry?: number }, opts?: { record?: boolean }) => void;
     deleteSelection: (canvas: fabric.Canvas) => void;
     bringForward: (canvas: fabric.Canvas) => void;
     sendBackward: (canvas: fabric.Canvas) => void;
@@ -78,17 +85,42 @@ const SERIALIZE_PROPS = [
 export const useMainStore = create<Mainstore>()((set, get) => ({
     tool: "pointer",
     setTool: (t) => set({ tool: t }),
-    selection: { has: false, type: null, editingText: false, fill: null },
+    selection: { has: false, type: null, editingText: false, fill: null, shape: null },
     setSelectionFromCanvas: (canvas) => {
         const active = canvas.getActiveObject() as fabric.Object | fabric.ActiveSelection | null;
         const editingText = !!active && active.type === 'i-text' && (active as any).isEditing;
         let fill: string | null = null;
+        let shape: Mainstore['selection']['shape'] = null;
         if (active && !editingText) {
-            // Lazy import (avoids potential circular imports at module eval time)
             const { extractUnifiedFill } = require('@/lib/fabric/selection');
             fill = extractUnifiedFill(active);
+            // Shape kind detection (all rects, all ellipses, etc.) – extensible
+            const collect: fabric.Object[] = [];
+            if (active.type === 'activeSelection') (active as fabric.ActiveSelection).forEachObject(o => collect.push(o)); else collect.push(active);
+            if (collect.length) {
+                const allTypes = new Set(collect.map(o => o.type));
+                if (allTypes.size === 1) {
+                    const onlyType = collect[0].type;
+                    if (onlyType === 'rect') {
+                        const rxVals = new Set<number>();
+                        const ryVals = new Set<number>();
+                        collect.forEach(o => {
+                            const r = o as any; if (typeof r.rx === 'number') rxVals.add(r.rx); if (typeof r.ry === 'number') ryVals.add(r.ry);
+                        });
+                        shape = {
+                            kind: 'rect',
+                            rect: {
+                                rx: rxVals.size === 1 ? [...rxVals][0] : null,
+                                ry: ryVals.size === 1 ? [...ryVals][0] : null,
+                            }
+                        };
+                    } else if (onlyType === 'ellipse') {
+                        shape = { kind: 'ellipse' }; // placeholders for future ellipse-specific props
+                    }
+                }
+            }
         }
-        set({ selection: { has: !!active && !editingText, type: active?.type || null, editingText, fill } });
+        set({ selection: { has: !!active && !editingText, type: active?.type || null, editingText, fill, shape } });
     },
     applyFillToSelection: (canvas, color) => {
         const active = canvas.getActiveObject() as fabric.Object | fabric.ActiveSelection | null; if (!active) return;
@@ -97,6 +129,35 @@ export const useMainStore = create<Mainstore>()((set, get) => ({
         canvas.requestRenderAll();
         // Update unified fill immediately
         set(state => ({ selection: { ...state.selection, fill: color } }));
+    },
+    applyRectCornerRadiusToSelection: (canvas, radius, opts?: { record?: boolean }) => {
+        const active = canvas.getActiveObject() as fabric.Object | fabric.ActiveSelection | null; if (!active) return;
+        const objs: fabric.Object[] = [];
+        if (active.type === 'activeSelection') (active as fabric.ActiveSelection).forEachObject(o => objs.push(o)); else objs.push(active);
+        const rects = objs.filter(o => o.type === 'rect');
+        if (!rects.length) return;
+        rects.forEach(ensureObjectId);
+        const before: { qcId: string; props: { rx: number; ry: number } }[] = [];
+        const after: { qcId: string; props: { rx: number; ry: number } }[] = [];
+        rects.forEach(r => {
+            const anyR = r as any;
+            const currentRx = typeof anyR.rx === 'number' ? anyR.rx : 0;
+            const currentRy = typeof anyR.ry === 'number' ? anyR.ry : 0;
+            const nextRx = radius.rx != null ? Math.max(0, radius.rx) : currentRx;
+            const nextRy = radius.ry != null ? Math.max(0, radius.ry) : currentRy;
+            if (nextRx !== currentRx || nextRy !== currentRy) {
+                before.push({ qcId: anyR.qcId, props: { rx: currentRx, ry: currentRy } });
+                anyR.set?.({ rx: nextRx, ry: nextRy });
+                anyR.setCoords();
+                after.push({ qcId: anyR.qcId, props: { rx: nextRx, ry: nextRy } });
+            }
+        });
+        if (after.length) {
+            canvas.requestRenderAll();
+            recordPropertyMutation(canvas, before, after, 'Corner Radius', true);
+        }
+        // Refresh selection snapshot (unified rx/ry)
+        get().setSelectionFromCanvas(canvas);
     },
     deleteSelection: (canvas) => {
         const active = canvas.getActiveObject() as any; if (!active) return;
