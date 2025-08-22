@@ -47,6 +47,11 @@ export const useFabricCanvas = (): FabricCanvasHook => {
     const setTool = useMainStore(s => s.setTool);
     const addToGallery = useMainStore(s => s.addToGallery);
     const setSelectionFromCanvas = useMainStore(s => s.setSelectionFromCanvas);
+    const markDirty = useMainStore(s => s.markDirty);
+    const saveDocument = useMainStore(s => s.saveDocument);
+    const loadDocuments = useMainStore(s => s.loadDocuments);
+    const createDocument = useMainStore(s => s.createDocument);
+    const documentId = useMainStore(s => s.documentId);
     const toolRef = useRef<CanvasTool>(tool);
     useEffect(() => { toolRef.current = tool; }, [tool]);
 
@@ -510,8 +515,8 @@ export const useFabricCanvas = (): FabricCanvasHook => {
         canvas.on('text:editing:exited', pushSelection as any);
         // Track transforms -> record modify command
         canvas.on('object:modified', (opt: any) => {
-            const target = opt.target as any; if (!target) return;
-            const before = (target as any).__qcBefore as any[] | undefined;
+            const target = opt.target as fabric.Object & { __qcBefore?: any[] } | null; if (!target) return;
+            const before = target.__qcBefore;
             if (!before) return;
             let after: any[];
             if (target.type === 'activeSelection') {
@@ -522,8 +527,28 @@ export const useFabricCanvas = (): FabricCanvasHook => {
                 after = snapshotObjects(target);
             }
             recordModify(canvas, before, after, 'Transform');
-            delete (target as any).__qcBefore;
+            markDirty();
+            delete target.__qcBefore;
         });
+        const safeMark = () => { if (canvas.__qcLoading) return; markDirty(); };
+        canvas.on('object:added', safeMark);
+        canvas.on('object:removed', safeMark);
+        canvas.on('object:skewing', () => markDirty());
+        // Initial document bootstrap
+        (async () => {
+            await loadDocuments();
+            const state = useMainStore.getState();
+            if (state.documentId) return; // already set by earlier logic
+            let last: string | null = null;
+            try { last = localStorage.getItem('qc:lastDoc'); } catch { }
+            if (last && state.documents.some(d => d.id === last)) {
+                await useMainStore.getState().loadDocument(last, canvas);
+            } else if (state.documents.length) {
+                await useMainStore.getState().loadDocument(state.documents[0].id, canvas);
+            } else {
+                await createDocument('Untitled');
+            }
+        })();
         pushSelection();
 
         return () => {
@@ -539,7 +564,22 @@ export const useFabricCanvas = (): FabricCanvasHook => {
             canvas.dispose();
             fabricCanvasRef.current = null;
         };
-    }, [copy, cut, paste, getTargetPoint, notify, addToGallery]);
+    }, [copy, cut, paste, getTargetPoint, notify, addToGallery, markDirty, loadDocuments, createDocument]);
+
+    // Autosave loop (debounced behavior): save 1s after last dirty mark
+    useEffect(() => {
+        if (!documentId) return;
+        let timer: any;
+        let last = useMainStore.getState().documentDirty;
+        const unsub = useMainStore.subscribe((s) => {
+            if (s.documentDirty && !last) {
+                clearTimeout(timer);
+                timer = setTimeout(() => { const canvas = fabricCanvasRef.current || undefined; saveDocument(canvas); }, 1000);
+            }
+            last = s.documentDirty;
+        });
+        return () => { clearTimeout(timer); unsub(); };
+    }, [documentId, saveDocument]);
 
     return { canvasRef: canvasRef as React.RefObject<HTMLCanvasElement>, copy, cut, paste, getCanvas: () => fabricCanvasRef.current, tool, setTool };
 };

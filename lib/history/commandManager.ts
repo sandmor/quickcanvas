@@ -1,13 +1,19 @@
 import * as fabric from 'fabric';
 
+// Internal augmentation helper so we avoid scattering (obj as any).qcId throughout.
+interface QCObject extends fabric.Object { qcId?: string; }
+const getId = (o: fabric.Object): string | undefined => (o as QCObject).qcId;
+const setId = (o: fabric.Object, id: string) => { (o as QCObject).qcId = id; };
+
 export const ensureObjectId = (obj: fabric.Object): string => {
-    const anyObj = obj as any;
-    if (!anyObj.qcId) {
-        anyObj.qcId = (typeof crypto !== 'undefined' && (crypto as any).randomUUID)
+    let id = getId(obj);
+    if (!id) {
+        id = (typeof crypto !== 'undefined' && (crypto as any).randomUUID)
             ? crypto.randomUUID()
             : Math.random().toString(36).slice(2, 11);
+        setId(obj, id);
     }
-    return anyObj.qcId;
+    return id;
 };
 
 export interface SerializedState { qcId: string; json: any; }
@@ -15,13 +21,13 @@ export interface SerializedState { qcId: string; json: any; }
 const serializeObject = (obj: fabric.Object): SerializedState => {
     const qcId = ensureObjectId(obj);
     const json = obj.toObject?.() ?? {};
-    (json as any).qcId = qcId;
+    (json as any).qcId = qcId; // embed for later enliven
     return { qcId, json };
 };
 const serializeObjects = (objs: fabric.Object[]): SerializedState[] => objs.map(serializeObject);
 
 const findObjectById = (canvas: fabric.Canvas, id: string): fabric.Object | undefined =>
-    canvas.getObjects().find(o => (o as any).qcId === id);
+    canvas.getObjects().find(o => getId(o) === id);
 
 const applyStateToExisting = (canvas: fabric.Canvas, state: SerializedState) => {
     const target = findObjectById(canvas, state.qcId);
@@ -30,7 +36,7 @@ const applyStateToExisting = (canvas: fabric.Canvas, state: SerializedState) => 
     delete (json as any).objects; // safety
     Object.entries(json).forEach(([k, v]) => {
         if (['type', 'version', 'qcId'].includes(k)) return;
-        (target as any)[k] = v;
+        (target as any)[k] = v; // fallback raw assign for props fabric.set may not cover
     });
     target.setCoords();
     return true;
@@ -41,7 +47,7 @@ const enlivenState = (canvas: fabric.Canvas, state: SerializedState): Promise<fa
         (fabric as any).util.enlivenObjects([state.json], (objs: fabric.Object[]) => {
             const obj = objs[0];
             if (!obj) { reject(new Error('Failed to enliven object')); return; }
-            (obj as any).qcId = state.qcId;
+            setId(obj, state.qcId);
             canvas.add(obj);
             resolve(obj);
         });
@@ -126,7 +132,7 @@ export const recordRemoveObjects = async (canvas: fabric.Canvas, objects: fabric
         label,
         stamp: Date.now(),
         execute: () => { // removal
-            arr.forEach(o => { const existing = findObjectById(canvas, (o as any).qcId); if (existing) canvas.remove(existing); });
+            arr.forEach(o => { const existing = findObjectById(canvas, getId(o) || ''); if (existing) canvas.remove(existing); });
             canvas.discardActiveObject();
             canvas.requestRenderAll();
         },
@@ -170,11 +176,11 @@ export const recordReorder = async (
     const applyOrder = (order: string[]) => {
         const existing = canvas.getObjects();
         existing.forEach(o => ensureObjectId(o));
-        const map = new Map(existing.map(o => [(o as any).qcId as string, o]));
+        const map = new Map(existing.map(o => [getId(o) as string, o]));
         // Build list in desired order; append any stray objects not referenced to preserve them.
         const ordered: fabric.Object[] = [];
         order.forEach(id => { const obj = map.get(id); if (obj) ordered.push(obj); });
-        existing.forEach(o => { const id = (o as any).qcId as string; if (!order.includes(id)) ordered.push(o); });
+        existing.forEach(o => { const id = getId(o) as string; if (!order.includes(id)) ordered.push(o); });
         // Efficiently reinsert: remove all then add in order (avoids touching background/overlay settings)
         existing.slice().forEach(o => canvas.remove(o));
         ordered.forEach(o => canvas.add(o));
@@ -208,7 +214,7 @@ export const recordPropertyMutation = async (
     if (!changed) return;
     const apply = (states: PropMutationState[]) => {
         states.forEach(st => {
-            const obj = canvas.getObjects().find(o => (o as any).qcId === st.qcId);
+            const obj = canvas.getObjects().find(o => getId(o) === st.qcId);
             if (!obj) return;
             try {
                 obj.set({ ...st.props });

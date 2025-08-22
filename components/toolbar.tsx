@@ -57,8 +57,8 @@ export const Toolbar = () => {
             setGalleryOpen(false);
         };
         const descriptors = Array.isArray(item.payload) ? item.payload : [item.payload];
-        Promise.resolve((fabric.util as any).enlivenObjects(descriptors))
-            .then((objs: fabric.Object[]) => addAndCenter(objs))
+        Promise.resolve(fabric.util.enlivenObjects(descriptors))
+            .then((objs) => addAndCenter(objs as any))
             .catch((err: unknown) => {
                 console.warn("Failed to insert gallery resource", { err, item });
                 toast.error("Failed to insert resource – it may be invalid or incompatible.");

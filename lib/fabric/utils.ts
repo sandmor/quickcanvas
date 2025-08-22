@@ -13,10 +13,10 @@ export const addObjectsAsSelection = (objects: fabric.Object[], canvas: fabric.C
 };
 
 export const invertPointThroughViewport = (canvas: fabric.Canvas, screenPoint: fabric.Point) => {
-    const vpt = canvas.viewportTransform as number[] | null;
-    if (vpt) {
-        const inv = (fabric as any).util.invertTransform(vpt);
-        return (fabric as any).util.transformPoint(screenPoint, inv);
+    const vpt = canvas.viewportTransform;
+    if (vpt && fabric.util) {
+        const inv = fabric.util.invertTransform(vpt);
+        return fabric.util.transformPoint(screenPoint, inv);
     }
     return screenPoint;
 };

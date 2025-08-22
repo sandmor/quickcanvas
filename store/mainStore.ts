@@ -5,8 +5,8 @@ import { CanvasTool } from "@/types/canvas";
 import * as fabric from "fabric";
 import { toast } from "sonner";
 import { stableHash } from "@/lib/utils";
-import { extractUnifiedFill, supportsFill } from "@/lib/fabric/selection";
-import { recordReorder, ensureObjectId, recordPropertyMutation } from '@/lib/history/commandManager';
+import { applyFillToObjectOrSelection, extractUnifiedFill, supportsFill } from "@/lib/fabric/selection";
+import { recordReorder, ensureObjectId, recordPropertyMutation, commandManager } from '@/lib/history/commandManager';
 
 // Representation of a gallery resource (persisted in-memory for now)
 // We store: id, kind, a lightweight preview (dataURL), and a serialized object JSON
@@ -34,6 +34,18 @@ export interface GalleryItem {
 }
 
 interface Mainstore {
+    // Active document id & collection cache
+    documentId: string | null;
+    documentName: string;
+    documents: { id: string; name: string; updatedAt: number; preview?: string }[]; // lightweight list
+    documentDirty: boolean; // unsaved local mutations since last persisted snapshot
+    loadDocuments: () => Promise<void>;
+    createDocument: (name?: string) => Promise<void>;
+    loadDocument: (id: string, canvas?: fabric.Canvas) => Promise<void>;
+    renameDocument: (id: string, name: string) => Promise<void>;
+    deleteDocument: (id: string, activeCanvas?: fabric.Canvas) => Promise<void>;
+    saveDocument: (canvas?: fabric.Canvas, opts?: { force?: boolean }) => Promise<void>;
+    markDirty: () => void; // mark active doc dirty; debounced autosave will pick up
     tool: CanvasTool;
     setTool: (t: CanvasTool) => void;
     // Selection (centralized info derived from fabric canvas)
@@ -91,6 +103,108 @@ const SERIALIZE_PROPS = [
 export const useMainStore = create<Mainstore>()((set, get) => ({
     tool: "pointer",
     setTool: (t) => set({ tool: t }),
+    documentId: null,
+    documentName: 'Untitled',
+    documents: [],
+    documentDirty: false,
+    loadDocuments: async () => {
+        const { db } = await import('@/lib/db');
+        console.log('Loading documents...');
+        const docs = await db.documents.orderBy('updatedAt').reverse().toArray();
+        console.log('Loaded documents:', docs);
+        set({ documents: docs.map(d => ({ id: d.id, name: d.name, updatedAt: d.updatedAt, preview: d.preview })) });
+    },
+    createDocument: async (name = 'Untitled') => {
+        const { db, generateId, computeStableHash } = await import('@/lib/db');
+        const id = generateId();
+        const now = Date.now();
+        const emptyData = { version: '5', objects: [] };
+        const contentHash = await computeStableHash(emptyData);
+        await db.documents.put({ id, name, createdAt: now, updatedAt: now, data: emptyData, contentHash });
+        set(state => ({ documentId: id, documentName: name, documentDirty: false, documents: [{ id, name, updatedAt: now }, ...state.documents] }));
+        try { localStorage.setItem('qc:lastDoc', id); } catch { }
+    },
+    loadDocument: async (id, canvas) => {
+        const { db } = await import('@/lib/db');
+        const rec = await db.documents.get(id);
+        if (!rec) { toast.error('Document not found'); return; }
+        // Short-circuit if already active (and no canvas reload requested)
+        if (get().documentId === id && !canvas) return;
+        if (canvas) {
+            try {
+                canvas.__qcLoading = true;
+                commandManager.clear();
+                // fabric v6: loadFromJSON returns Promise<void>
+                await (canvas as unknown as { loadFromJSON: (json: any) => Promise<void> }).loadFromJSON(rec.data);
+                canvas.renderAll();
+                canvas.discardActiveObject();
+            } catch (e) {
+                console.warn('Failed to load document', e);
+                toast.error('Failed to load document');
+            } finally {
+                canvas.__qcLoading = false;
+                try { get().setSelectionFromCanvas(canvas); } catch { }
+            }
+        }
+        set({ documentId: rec.id, documentName: rec.name, documentDirty: false });
+        try { localStorage.setItem('qc:lastDoc', rec.id); } catch { }
+        // Refresh list ordering asynchronously (do not await)
+        get().loadDocuments();
+    },
+    renameDocument: async (id, name) => {
+        const { db } = await import('@/lib/db');
+        await db.documents.update(id, { name, updatedAt: Date.now() });
+        set(state => ({ documentName: state.documentId === id ? name : state.documentName, documents: state.documents.map(d => d.id === id ? { ...d, name } : d) }));
+    },
+    deleteDocument: async (id, activeCanvas) => {
+        const { db } = await import('@/lib/db');
+        await db.documents.delete(id);
+        set(state => ({ documents: state.documents.filter(d => d.id !== id) }));
+        const st = get();
+        if (st.documentId === id) {
+            // If we deleted active doc, create a new one.
+            await get().createDocument('Untitled');
+            if (activeCanvas) activeCanvas.clear();
+        }
+        try {
+            const last = get().documentId; if (last) localStorage.setItem('qc:lastDoc', last); else localStorage.removeItem('qc:lastDoc');
+        } catch { }
+    },
+    saveDocument: async (canvas, opts) => {
+        const { documentId, documentDirty } = get();
+        if (!documentId) return;
+        if (!opts?.force && !documentDirty) return; // skip if not dirty
+        const { db, computeStableHash } = await import('@/lib/db');
+        const rec = await db.documents.get(documentId); if (!rec) return;
+        let data = rec.data;
+        try {
+            if (canvas) {
+                // We store plain object JSON; toJSON returns fabric objects array, we keep that.
+                data = canvas.toJSON();
+            }
+        } catch (e) { console.warn('Serialize canvas failed', e); }
+        const contentHash = await computeStableHash({ objects: (data as any).objects });
+        const now = Date.now();
+        // Generate preview (throttled size) – capture bounding box of all objects.
+        let preview = rec.preview; // reuse if we fail
+        if (canvas) {
+            try {
+                const objs = canvas.getObjects().filter(o => o.selectable !== false);
+                if (objs.length) {
+                    const sel = new fabric.ActiveSelection(objs, { canvas });
+                    const bb = sel.getBoundingRect();
+                    const MAX = 300; const scale = Math.min(MAX / bb.width, MAX / bb.height, 1);
+                    preview = canvas.toDataURL({ format: 'png', left: bb.left, top: bb.top, width: bb.width, height: bb.height, multiplier: scale });
+                } else {
+                    preview = undefined;
+                }
+            } catch { }
+        }
+        await db.documents.put({ ...rec, data, contentHash, updatedAt: now, preview });
+        set(state => ({ documentDirty: false, documents: state.documents.map(d => d.id === documentId ? { ...d, updatedAt: now, preview } : d) }));
+        try { localStorage.setItem('qc:lastDoc', documentId); } catch { }
+    },
+    markDirty: () => set({ documentDirty: true }),
     selection: { has: false, type: null, editingText: false, fill: null, shape: null, capabilities: { fill: false, cornerRadius: false } },
     setSelectionFromCanvas: (canvas) => {
         const active = canvas.getActiveObject() as fabric.Object | fabric.ActiveSelection | null;
@@ -134,7 +248,6 @@ export const useMainStore = create<Mainstore>()((set, get) => ({
     },
     applyFillToSelection: (canvas, color) => {
         const active = canvas.getActiveObject() as fabric.Object | fabric.ActiveSelection | null; if (!active) return;
-        const { applyFillToObjectOrSelection } = require('@/lib/fabric/selection');
         applyFillToObjectOrSelection(active, color);
         canvas.requestRenderAll();
         // Update unified fill immediately

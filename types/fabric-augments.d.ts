@@ -7,6 +7,7 @@ declare module 'fabric' {
         lastPosX?: number;
         lastPosY?: number;
         _groupSelector?: unknown; // internal fabric field accessed defensively
+        __qcLoading?: boolean; // quickcanvas: true while loading doc JSON
     }
     interface FabricObject {
         qcId?: string; // internal quickcanvas id for history tracking
