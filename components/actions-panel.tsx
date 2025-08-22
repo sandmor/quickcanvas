@@ -130,11 +130,13 @@ export const ActionsPanel: React.FC = () => {
     return (
         <div className="z-50 pointer-events-auto fixed top-1/2 -translate-y-1/2 left-4 hidden md:flex flex-col gap-3">
             <div className="flex flex-col gap-3 p-3 rounded-lg border bg-popover/90 backdrop-blur-md shadow-lg w-40">
-                <div className="flex flex-col gap-2">
-                    <span className="text-[11px] font-medium tracking-wide text-muted-foreground">Fill</span>
-                    {palette}
-                </div>
-                {selection.shape?.kind === 'rect' && (
+                {selection.capabilities?.fill && (
+                    <div className="flex flex-col gap-2">
+                        <span className="text-[11px] font-medium tracking-wide text-muted-foreground">Fill</span>
+                        {palette}
+                    </div>
+                )}
+                {selection.capabilities?.cornerRadius && selection.shape?.kind === 'rect' && (
                     <div className="flex flex-col gap-1.5">
                         <div className="flex items-center justify-between">
                             <span className="text-[11px] font-medium tracking-wide text-muted-foreground">Corners</span>
@@ -314,8 +316,10 @@ export const ActionsPanelMobile: React.FC = () => {
                 </div>
                 {open && (
                     <>
-                        <ColorPicker value={selection.fill || "#000000"} onChange={applyFill} swatches={CANVAS_COLOR_SWATCHES} showTriggerButton={false} />
-                        {selection.shape?.kind === 'rect' && (
+                        {selection.capabilities?.fill && (
+                            <ColorPicker value={selection.fill || "#000000"} onChange={applyFill} swatches={CANVAS_COLOR_SWATCHES} showTriggerButton={false} />
+                        )}
+                        {selection.capabilities?.cornerRadius && selection.shape?.kind === 'rect' && (
                             <CornerRadiusMobileControls selection={selection} applyRectCornerRadiusToSelection={applyRectCornerRadiusToSelection} />
                         )}
                         <div className="grid grid-cols-4 gap-1">

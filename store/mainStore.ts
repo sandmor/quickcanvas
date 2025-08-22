@@ -5,6 +5,7 @@ import { CanvasTool } from "@/types/canvas";
 import * as fabric from "fabric";
 import { toast } from "sonner";
 import { stableHash } from "@/lib/utils";
+import { extractUnifiedFill, supportsFill } from "@/lib/fabric/selection";
 import { recordReorder, ensureObjectId, recordPropertyMutation } from '@/lib/history/commandManager';
 
 // Representation of a gallery resource (persisted in-memory for now)
@@ -47,6 +48,11 @@ interface Mainstore {
             // Rectangle specific
             rect?: { rx: number | null; ry: number | null };
         } | null;
+        // Capability flags (render gating). Add new flags here instead of ad-hoc UI conditionals.
+        capabilities?: {
+            fill: boolean;           // at least one object supports fill
+            cornerRadius: boolean;   // all objects are rects (unified corner radius editing)
+        };
     };
     setSelectionFromCanvas: (canvas: fabric.Canvas) => void;
     applyFillToSelection: (canvas: fabric.Canvas, color: string) => void;
@@ -85,19 +91,21 @@ const SERIALIZE_PROPS = [
 export const useMainStore = create<Mainstore>()((set, get) => ({
     tool: "pointer",
     setTool: (t) => set({ tool: t }),
-    selection: { has: false, type: null, editingText: false, fill: null, shape: null },
+    selection: { has: false, type: null, editingText: false, fill: null, shape: null, capabilities: { fill: false, cornerRadius: false } },
     setSelectionFromCanvas: (canvas) => {
         const active = canvas.getActiveObject() as fabric.Object | fabric.ActiveSelection | null;
         const editingText = !!active && active.type === 'i-text' && (active as any).isEditing;
         let fill: string | null = null;
         let shape: Mainstore['selection']['shape'] = null;
+        let capabilities: NonNullable<Mainstore['selection']['capabilities']> = { fill: false, cornerRadius: false };
         if (active && !editingText) {
-            const { extractUnifiedFill } = require('@/lib/fabric/selection');
             fill = extractUnifiedFill(active);
             // Shape kind detection (all rects, all ellipses, etc.) – extensible
             const collect: fabric.Object[] = [];
             if (active.type === 'activeSelection') (active as fabric.ActiveSelection).forEachObject(o => collect.push(o)); else collect.push(active);
             if (collect.length) {
+                // Capability: fill if any object supports fill
+                capabilities.fill = collect.some(o => supportsFill(o));
                 const allTypes = new Set(collect.map(o => o.type));
                 if (allTypes.size === 1) {
                     const onlyType = collect[0].type;
@@ -114,13 +122,15 @@ export const useMainStore = create<Mainstore>()((set, get) => ({
                                 ry: ryVals.size === 1 ? [...ryVals][0] : null,
                             }
                         };
+                        capabilities.cornerRadius = true; // unified rect radius editing
                     } else if (onlyType === 'ellipse') {
                         shape = { kind: 'ellipse' }; // placeholders for future ellipse-specific props
                     }
                 }
+                // Corner radius only when all are rects (already gated above). For mixed future shapes, keep false.
             }
         }
-        set({ selection: { has: !!active && !editingText, type: active?.type || null, editingText, fill, shape } });
+        set({ selection: { has: !!active && !editingText, type: active?.type || null, editingText, fill, shape, capabilities } });
     },
     applyFillToSelection: (canvas, color) => {
         const active = canvas.getActiveObject() as fabric.Object | fabric.ActiveSelection | null; if (!active) return;
@@ -130,7 +140,7 @@ export const useMainStore = create<Mainstore>()((set, get) => ({
         // Update unified fill immediately
         set(state => ({ selection: { ...state.selection, fill: color } }));
     },
-    applyRectCornerRadiusToSelection: (canvas, radius, opts?: { record?: boolean }) => {
+    applyRectCornerRadiusToSelection: (canvas, radius) => {
         const active = canvas.getActiveObject() as fabric.Object | fabric.ActiveSelection | null; if (!active) return;
         const objs: fabric.Object[] = [];
         if (active.type === 'activeSelection') (active as fabric.ActiveSelection).forEachObject(o => objs.push(o)); else objs.push(active);
