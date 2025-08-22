@@ -6,7 +6,7 @@ import { getCanvasCenterWorld } from "@/lib/fabric/utils";
 import { useMainStore } from "@/store/mainStore";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { MousePointer2, Square, Circle, Library, Hand, X } from "lucide-react";
+import { MousePointer2, Square, Circle, Slash, Library, Hand, X } from "lucide-react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from "./ui/dropdown-menu";
 import { ScrollArea } from "./ui/scroll-area";
 import { Separator } from "./ui/separator";
@@ -22,12 +22,13 @@ export const Toolbar = () => {
         setTool(value as ToolId);
     }, [setTool]);
 
-    type ToolId = "pointer" | "pan" | "rect" | "circle";
+    type ToolId = "pointer" | "pan" | "rect" | "ellipse" | "line";
     const tools: { id: ToolId; label: string; icon: React.ComponentType<any>; }[] = [
         { id: "pointer", label: "Pointer (V)", icon: MousePointer2 },
         { id: "pan", label: "Pan / Hand (H or Middle Drag)", icon: Hand },
         { id: "rect", label: "Rectangle (R)", icon: Square },
-        { id: "circle", label: "Circle (C)", icon: Circle },
+        { id: "ellipse", label: "Ellipse (E)", icon: Circle },
+        { id: "line", label: "Line (L)", icon: Slash },
     ];
     const gallery = useMainStore(s => s.gallery);
     const removeFromGallery = useMainStore(s => s.removeFromGallery);

@@ -4,6 +4,7 @@ import { useEffect, useRef, useCallback } from "react";
 import * as fabric from "fabric";
 import { addImageBlob, addSVGString, copyToSystemClipboard, tryReadFromSystemClipboard } from "@/lib/fabric/clipboard";
 import { addObjectsAsSelection, centerObjectAt, getCanvasCenterWorld, centerInViewport } from "@/lib/fabric/utils";
+import { ShapeKind, insertShape, ShapeCreateContext, updateDraggingShape, finalizeDraggingShape } from "@/lib/fabric/shapes";
 import { classifyClipboardObject, FabricClipboardEntry, isActiveSelection } from "@/lib/fabric/types";
 import { toast } from "sonner";
 import { useMainStore } from "@/store/mainStore";
@@ -18,7 +19,7 @@ export interface FabricCanvasHook {
     setTool: (t: CanvasTool) => void;
 }
 
-export type CanvasTool = "pointer" | "pan" | "rect" | "circle";
+export type CanvasTool = "pointer" | "pan" | "rect" | "ellipse" | "line"; // shape tools should have entries in shapes.ts
 
 export const useFabricCanvas = (): FabricCanvasHook => {
     // Use explicit possibly-null element ref but cast on return to align with consumer expectations
@@ -140,24 +141,53 @@ export const useFabricCanvas = (): FabricCanvasHook => {
         canvas.requestRenderAll();
     }, [getTargetPoint, notify]);
 
-    // Helper to insert shape at last pointer (or canvas center) and return to pointer tool
-    const spawnShapeAt = useCallback((kind: Exclude<CanvasTool, "pointer">) => {
-        const canvas = fabricCanvasRef.current; if (!canvas) return;
-        // Use last pointer if present else viewport center (world space)
-        const target = getTargetPoint();
-        let obj: fabric.Object | null = null;
-        if (kind === "rect") {
-            obj = new fabric.Rect({ width: 160, height: 100, fill: "#2563eb", rx: 4, ry: 4 });
-        } else if (kind === "circle") {
-            obj = new fabric.Circle({ radius: 60, fill: "#16a34a" });
+    const creationRef = useRef<ShapeCreateContext | null>(null);
+    const creationEnvRef = useRef<{ prevSelection: boolean; prevSkipTF: boolean } | null>(null);
+    const cancelCreation = () => {
+        const canvas = fabricCanvasRef.current; if (!canvas) { creationRef.current = null; return; }
+        const ctx = creationRef.current;
+        if (ctx?.started && ctx.object) {
+            canvas.remove(ctx.object);
+            canvas.requestRenderAll();
         }
-        if (!obj) return;
-        centerObjectAt(obj, target);
-        canvas.add(obj);
-        canvas.setActiveObject(obj);
-        canvas.requestRenderAll();
-        setTool("pointer");
-    }, [getTargetPoint]);
+        if (creationEnvRef.current) {
+            canvas.selection = creationEnvRef.current.prevSelection;
+            canvas.skipTargetFind = creationEnvRef.current.prevSkipTF;
+        }
+        creationEnvRef.current = null;
+        creationRef.current = null;
+    };
+    const beginCreation = (kind: ShapeKind, origin: fabric.Point) => {
+        const canvas = fabricCanvasRef.current; if (!canvas) return;
+        creationRef.current = { kind, origin, object: null, started: false };
+        creationEnvRef.current = { prevSelection: canvas.selection as boolean, prevSkipTF: canvas.skipTargetFind === true };
+        canvas.selection = false; // suppress group selection rectangle
+        canvas.skipTargetFind = true; // avoid hover outlines or accidental targeting
+    };
+    const updateCreation = (pt: fabric.Point, shiftKey: boolean, altKey: boolean) => {
+        const canvas = fabricCanvasRef.current; if (!canvas) return;
+        if (!creationRef.current) return;
+        updateDraggingShape(canvas, creationRef.current, pt, { maintainAspect: shiftKey, fromCenter: altKey });
+    };
+    const finalizeCreation = () => {
+        const canvas = fabricCanvasRef.current; if (!canvas) return;
+        const ctx = creationRef.current; if (!ctx) return;
+        if (ctx.started && ctx.object) {
+            finalizeDraggingShape(canvas, ctx);
+        } else {
+            insertShape(canvas, ctx.kind, { at: ctx.origin, autoSelect: true });
+        }
+        if (creationEnvRef.current) {
+            canvas.selection = creationEnvRef.current.prevSelection;
+            canvas.skipTargetFind = creationEnvRef.current.prevSkipTF;
+            creationEnvRef.current = null;
+        } else {
+            canvas.selection = true;
+            canvas.skipTargetFind = false;
+        }
+        setTool('pointer');
+        creationRef.current = null;
+    };
 
     // Initialization + events
     useEffect(() => {
@@ -191,10 +221,11 @@ export const useFabricCanvas = (): FabricCanvasHook => {
             const key = e.key.toLowerCase();
             // Tool hotkeys (no modifier) mimic design app conventions
             if (!e.metaKey && !e.ctrlKey && !e.altKey) {
-                if (key === "v" || key === "escape") { setTool("pointer"); }
+                if (key === "v" || key === "escape") { setTool("pointer"); if (key === 'escape') cancelCreation(); }
                 else if (key === "h") { setTool("pan"); }
                 else if (key === "r") { setTool("rect"); }
-                else if (key === "c") { setTool("circle"); }
+                else if (key === "e") { setTool("ellipse"); }
+                else if (key === "l") { setTool("line"); }
             }
             const meta = e.ctrlKey || e.metaKey; if (!meta) return;
             if (key === "c") { e.preventDefault(); copy(); }
@@ -353,8 +384,10 @@ export const useFabricCanvas = (): FabricCanvasHook => {
                 canvas.setCursor('grabbing');
                 canvas.renderAll();
             } else if (activeTool !== 'pointer' && activeTool !== 'pan' && e && e.button === 0) {
-                // Shape tools spawn immediately at click point
-                spawnShapeAt(activeTool as Exclude<CanvasTool, 'pointer' | 'pan'>);
+                // Initiate shape creation (drag-based)
+                beginCreation(activeTool as ShapeKind, new fabric.Point(lastPointerRef.current!.x, lastPointerRef.current!.y));
+                // Avoid immediate selection flicker
+                canvas.discardActiveObject();
             }
         });
         canvas.on("mouse:move", (opt) => {
@@ -364,6 +397,16 @@ export const useFabricCanvas = (): FabricCanvasHook => {
             const vpt = canvas.viewportTransform; if (vpt && canvas.lastPosX != null && canvas.lastPosY != null) { vpt[4] += e.clientX - canvas.lastPosX; vpt[5] += e.clientY - canvas.lastPosY; canvas.requestRenderAll(); }
             canvas.lastPosX = e.clientX; canvas.lastPosY = e.clientY;
         });
+        // Fabric does not expose a direct shift state here, so pull from native event
+        canvas.on('mouse:move', (opt) => {
+            const e = opt.e as any;
+            if (creationRef.current && e) {
+                const pt = canvas.getScenePoint(e); // world point
+                updateCreation(new fabric.Point(pt.x, pt.y), e.shiftKey, !!e.altKey);
+                // Ensure fabric's internal group selector is cleared (belt & suspenders)
+                if ((canvas as any)._groupSelector) (canvas as any)._groupSelector = null;
+            }
+        });
         canvas.on("mouse:up", (opt) => {
             const wasDragging = canvas.isDragging;
             if (wasDragging) {
@@ -372,6 +415,9 @@ export const useFabricCanvas = (): FabricCanvasHook => {
                 canvas.selection = true;
                 canvas.setCursor('default');
                 canvas.renderAll();
+            }
+            if (creationRef.current) {
+                finalizeCreation();
             }
         });
 
@@ -388,7 +434,7 @@ export const useFabricCanvas = (): FabricCanvasHook => {
             canvas.dispose();
             fabricCanvasRef.current = null;
         };
-    }, [copy, cut, paste, getTargetPoint, notify, spawnShapeAt, addToGallery]);
+    }, [copy, cut, paste, getTargetPoint, notify, addToGallery]);
 
     return { canvasRef: canvasRef as React.RefObject<HTMLCanvasElement>, copy, cut, paste, getCanvas: () => fabricCanvasRef.current, tool, setTool };
 };
