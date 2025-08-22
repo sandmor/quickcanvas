@@ -4,6 +4,7 @@ import { useCallback, useState } from "react";
 import * as fabric from "fabric";
 import { getCanvasCenterWorld } from "@/lib/fabric/utils";
 import { useMainStore } from "@/store/mainStore";
+import { CanvasTool } from "@/types/canvas";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { MousePointer2, Square, Circle, Slash, Library, Hand, X, Type } from "lucide-react";
@@ -22,8 +23,8 @@ export const Toolbar = () => {
         setTool(value as ToolId);
     }, [setTool]);
 
-    type ToolId = "pointer" | "pan" | "rect" | "ellipse" | "line" | "text";
-    const tools: { id: ToolId; label: string; icon: React.ComponentType<any>; }[] = [
+    type ToolId = CanvasTool;
+    const tools: { id: CanvasTool; label: string; icon: React.ComponentType<any>; }[] = [
         { id: "pointer", label: "Pointer (V)", icon: MousePointer2 },
         { id: "pan", label: "Pan / Hand (H or Middle Drag)", icon: Hand },
         { id: "rect", label: "Rectangle (R)", icon: Square },

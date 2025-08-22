@@ -3,11 +3,12 @@
 import { useEffect, useRef, useCallback } from "react";
 import * as fabric from "fabric";
 import { addImageBlob, addSVGString, copyToSystemClipboard, tryReadFromSystemClipboard } from "@/lib/fabric/clipboard";
-import { addObjectsAsSelection, centerObjectAt, getCanvasCenterWorld, centerInViewport } from "@/lib/fabric/utils";
+import { centerObjectAt, getCanvasCenterWorld } from "@/lib/fabric/utils";
 import { ShapeKind, insertShape, ShapeCreateContext, updateDraggingShape, finalizeDraggingShape } from "@/lib/fabric/shapes";
 import { classifyClipboardObject, FabricClipboardEntry, isActiveSelection } from "@/lib/fabric/types";
 import { toast } from "sonner";
 import { useMainStore } from "@/store/mainStore";
+import { CanvasTool } from "@/types/canvas";
 
 export interface FabricCanvasHook {
     canvasRef: React.RefObject<HTMLCanvasElement>;
@@ -19,7 +20,7 @@ export interface FabricCanvasHook {
     setTool: (t: CanvasTool) => void;
 }
 
-export type CanvasTool = "pointer" | "pan" | "rect" | "ellipse" | "line" | "text"; // shape tools have entries in shapes.ts (text handled separately)
+// CanvasTool type moved to '@/types/canvas' for reuse without circular deps.
 
 export const useFabricCanvas = (): FabricCanvasHook => {
     // Use explicit possibly-null element ref but cast on return to align with consumer expectations
@@ -46,6 +47,7 @@ export const useFabricCanvas = (): FabricCanvasHook => {
     const tool = useMainStore(s => s.tool);
     const setTool = useMainStore(s => s.setTool);
     const addToGallery = useMainStore(s => s.addToGallery);
+    const setSelectionFromCanvas = useMainStore(s => s.setSelectionFromCanvas);
     const toolRef = useRef<CanvasTool>(tool);
     useEffect(() => { toolRef.current = tool; }, [tool]);
 
@@ -86,6 +88,7 @@ export const useFabricCanvas = (): FabricCanvasHook => {
         const cloned = await (activeObject as fabric.Object).clone();
         clipboardRef.current = classifyClipboardObject(cloned as fabric.Object);
         await copyToSystemClipboard(activeObject, notify);
+        setSelectionFromCanvas(canvas);
     }, []);
 
     const cut = useCallback(async () => {
@@ -102,6 +105,7 @@ export const useFabricCanvas = (): FabricCanvasHook => {
         }
         canvas.discardActiveObject();
         canvas.requestRenderAll();
+        setSelectionFromCanvas(canvas);
     }, [notify]);
 
     const paste = useCallback(async () => {
@@ -139,6 +143,7 @@ export const useFabricCanvas = (): FabricCanvasHook => {
             addToGallery(clonedObj);
         }
         canvas.requestRenderAll();
+        setSelectionFromCanvas(canvas);
     }, [getTargetPoint, notify]);
 
     const creationRef = useRef<ShapeCreateContext | null>(null);
@@ -210,10 +215,6 @@ export const useFabricCanvas = (): FabricCanvasHook => {
         // Prevent default touch actions (scroll/zoom) so we can fully control gestures
         try { canvas.upperCanvasEl.style.touchAction = 'none'; } catch { }
 
-        // Demo objects
-        canvas.add(new fabric.Rect({ left: 100, top: 100, fill: "red", width: 200, height: 200 }));
-        canvas.add(new fabric.Circle({ radius: 100, fill: "green", left: 500, top: 300 }));
-
         const handleResize = () => { canvas.setWidth(window.innerWidth); canvas.setHeight(window.innerHeight); canvas.renderAll(); };
         window.addEventListener("resize", handleResize);
 
@@ -227,6 +228,7 @@ export const useFabricCanvas = (): FabricCanvasHook => {
                 // While editing text, only handle Escape (exit) – let browser handle copy/cut/paste & character input.
                 if (key === 'escape') {
                     active.exitEditing(); canvas?.requestRenderAll();
+                    if (canvas) setSelectionFromCanvas(canvas);
                 }
                 return; // swallow other hotkeys so they don't toggle tools mid-edit
             }
@@ -252,6 +254,7 @@ export const useFabricCanvas = (): FabricCanvasHook => {
                     canvas.setActiveObject(sel);
                 }
                 canvas.requestRenderAll();
+                setSelectionFromCanvas(canvas);
             }
         };
         window.addEventListener("keydown", handleKeydown);
@@ -267,6 +270,7 @@ export const useFabricCanvas = (): FabricCanvasHook => {
                     }
                     canvas.discardActiveObject();
                     canvas.requestRenderAll();
+                    setSelectionFromCanvas(canvas);
                 }
             }
         };
@@ -298,6 +302,7 @@ export const useFabricCanvas = (): FabricCanvasHook => {
                     textObj.setCoords();
                     canvas.requestRenderAll();
                     notify('Pasted Text');
+                    setSelectionFromCanvas(canvas);
                     return;
                 }
             }
@@ -434,9 +439,11 @@ export const useFabricCanvas = (): FabricCanvasHook => {
                         canvas.remove(textObj);
                     }
                     canvas.requestRenderAll();
+                    setSelectionFromCanvas(canvas);
                 });
                 canvas.requestRenderAll();
                 setTool('pointer'); // revert to pointer after insertion for fluid workflow
+                setSelectionFromCanvas(canvas);
             } else if (activeTool !== 'pointer' && activeTool !== 'pan' && activeTool !== 'text' && e && e.button === 0) {
                 // Initiate shape creation (drag-based)
                 beginCreation(activeTool as ShapeKind, new fabric.Point(lastPointerRef.current!.x, lastPointerRef.current!.y));
@@ -472,8 +479,17 @@ export const useFabricCanvas = (): FabricCanvasHook => {
             }
             if (creationRef.current) {
                 finalizeCreation();
+                setSelectionFromCanvas(canvas);
             }
         });
+
+        // Bridge fabric selection events -> store
+        const pushSelection = () => setSelectionFromCanvas(canvas);
+        canvas.on('selection:created', pushSelection);
+        canvas.on('selection:updated', pushSelection);
+        canvas.on('selection:cleared', pushSelection);
+        canvas.on('text:editing:exited', pushSelection as any);
+        pushSelection();
 
         return () => {
             window.removeEventListener("resize", handleResize);

@@ -1,7 +1,7 @@
 "use client";
 
 import { create } from "zustand";
-import { CanvasTool } from "@/hooks/useFabricCanvas";
+import { CanvasTool } from "@/types/canvas";
 import * as fabric from "fabric";
 import { toast } from "sonner";
 import { stableHash } from "@/lib/utils";
@@ -34,6 +34,16 @@ export interface GalleryItem {
 interface Mainstore {
     tool: CanvasTool;
     setTool: (t: CanvasTool) => void;
+    // Selection (centralized info derived from fabric canvas)
+    selection: {
+        has: boolean;
+        type: string | null; // fabric object type or 'activeSelection'
+        editingText: boolean;
+        fill: string | null; // unified fill across selection or null if mixed / unsupported
+    };
+    setSelectionFromCanvas: (canvas: fabric.Canvas) => void;
+    applyFillToSelection: (canvas: fabric.Canvas, color: string) => void;
+    deleteSelection: (canvas: fabric.Canvas) => void;
     gallery: GalleryItem[];
     /**
      * Add a fabric object (single / image / activeSelection) to the gallery.
@@ -63,6 +73,36 @@ const SERIALIZE_PROPS = [
 export const useMainStore = create<Mainstore>()((set, get) => ({
     tool: "pointer",
     setTool: (t) => set({ tool: t }),
+    selection: { has: false, type: null, editingText: false, fill: null },
+    setSelectionFromCanvas: (canvas) => {
+        const active = canvas.getActiveObject() as fabric.Object | fabric.ActiveSelection | null;
+        const editingText = !!active && active.type === 'i-text' && (active as any).isEditing;
+        let fill: string | null = null;
+        if (active && !editingText) {
+            // Lazy import (avoids potential circular imports at module eval time)
+            const { extractUnifiedFill } = require('@/lib/fabric/selection');
+            fill = extractUnifiedFill(active);
+        }
+        set({ selection: { has: !!active && !editingText, type: active?.type || null, editingText, fill } });
+    },
+    applyFillToSelection: (canvas, color) => {
+        const active = canvas.getActiveObject() as fabric.Object | fabric.ActiveSelection | null; if (!active) return;
+        const { applyFillToObjectOrSelection } = require('@/lib/fabric/selection');
+        applyFillToObjectOrSelection(active, color);
+        canvas.requestRenderAll();
+        // Update unified fill immediately
+        set(state => ({ selection: { ...state.selection, fill: color } }));
+    },
+    deleteSelection: (canvas) => {
+        const active = canvas.getActiveObject() as any; if (!active) return;
+        if (active.type === 'activeSelection') {
+            (active as fabric.ActiveSelection).forEachObject((o: fabric.Object) => canvas.remove(o));
+        } else {
+            canvas.remove(active);
+        }
+        canvas.discardActiveObject(); canvas.requestRenderAll();
+        set({ selection: { has: false, type: null, editingText: false, fill: null } });
+    },
     gallery: [],
     addToGallery: async (obj) => {
         const serialize = (o: fabric.Object): SerializedFabricObject => {
