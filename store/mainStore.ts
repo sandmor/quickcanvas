@@ -55,7 +55,9 @@ const checksumIndex = new Map<string, string>(); // checksum -> gallery id
 // Whitelisted properties for serialization + a few more style/transform properties for fidelity
 const SERIALIZE_PROPS = [
     'selectable', 'evented', 'name', 'id', 'left', 'top', 'width', 'height', 'angle', 'scaleX', 'scaleY', 'rx', 'ry',
-    'fill', 'stroke', 'strokeWidth', 'opacity', 'flipX', 'flipY', 'shadow', 'strokeDashArray', 'fontSize', 'fontFamily', 'fontWeight'
+    'fill', 'stroke', 'strokeWidth', 'opacity', 'flipX', 'flipY', 'shadow', 'strokeDashArray',
+    // Text specific
+    'fontSize', 'fontFamily', 'fontWeight', 'fontStyle', 'underline', 'linethrough', 'overline', 'charSpacing', 'lineHeight', 'textAlign'
 ];
 
 export const useMainStore = create<Mainstore>()((set, get) => ({

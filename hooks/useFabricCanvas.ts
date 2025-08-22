@@ -19,7 +19,7 @@ export interface FabricCanvasHook {
     setTool: (t: CanvasTool) => void;
 }
 
-export type CanvasTool = "pointer" | "pan" | "rect" | "ellipse" | "line"; // shape tools should have entries in shapes.ts
+export type CanvasTool = "pointer" | "pan" | "rect" | "ellipse" | "line" | "text"; // shape tools have entries in shapes.ts (text handled separately)
 
 export const useFabricCanvas = (): FabricCanvasHook => {
     // Use explicit possibly-null element ref but cast on return to align with consumer expectations
@@ -220,24 +220,35 @@ export const useFabricCanvas = (): FabricCanvasHook => {
         const handleKeydown = (e: KeyboardEvent) => {
             const key = e.key.toLowerCase();
             // Tool hotkeys (no modifier) mimic design app conventions
+            const canvas = fabricCanvasRef.current;
+            const active = canvas?.getActiveObject() as any;
+            const editingText = !!active && active.type === 'i-text' && active.isEditing;
+            if (editingText) {
+                // While editing text, only handle Escape (exit) – let browser handle copy/cut/paste & character input.
+                if (key === 'escape') {
+                    active.exitEditing(); canvas?.requestRenderAll();
+                }
+                return; // swallow other hotkeys so they don't toggle tools mid-edit
+            }
             if (!e.metaKey && !e.ctrlKey && !e.altKey) {
                 if (key === "v" || key === "escape") { setTool("pointer"); if (key === 'escape') cancelCreation(); }
                 else if (key === "h") { setTool("pan"); }
                 else if (key === "r") { setTool("rect"); }
                 else if (key === "e") { setTool("ellipse"); }
                 else if (key === "l") { setTool("line"); }
+                else if (key === "t") { setTool("text"); }
             }
             const meta = e.ctrlKey || e.metaKey; if (!meta) return;
             if (key === "c") { e.preventDefault(); copy(); }
             else if (key === "x") { e.preventDefault(); cut(); }
             else if (key === "v") { e.preventDefault(); suppressNextDomPasteRef.current = true; paste(); }
-            else if (key === 'a') { // Select all
+            else if (key === 'a' && canvas) { // Select all
                 e.preventDefault();
                 const objs = canvas.getObjects().filter(o => o.selectable !== false);
                 if (objs.length === 1) {
                     canvas.setActiveObject(objs[0]);
                 } else if (objs.length > 1) {
-                    const sel = new fabric.ActiveSelection(objs, { canvas });
+                    const sel = new fabric.ActiveSelection(objs, { canvas: canvas as fabric.Canvas });
                     canvas.setActiveObject(sel);
                 }
                 canvas.requestRenderAll();
@@ -245,10 +256,10 @@ export const useFabricCanvas = (): FabricCanvasHook => {
         };
         window.addEventListener("keydown", handleKeydown);
         const handleKeyup = (e: KeyboardEvent) => {
-            // Delete / Backspace remove active object(s)
+            // Delete / Backspace remove active object(s) unless currently editing text
             if (e.key === 'Delete' || e.key === 'Backspace') {
-                const active = canvas.getActiveObject();
-                if (active) {
+                const active: any = canvas.getActiveObject();
+                if (active && !(active.type === 'i-text' && active.isEditing)) {
                     if (isActiveSelection(active)) {
                         active.forEachObject((obj: fabric.Object) => canvas.remove(obj));
                     } else {
@@ -270,7 +281,26 @@ export const useFabricCanvas = (): FabricCanvasHook => {
             const html = dt.getData("text/html");
             if (html) { const match = html.match(/<svg[\s\S]*?<\/svg>/i); if (match) { e.preventDefault(); await addSVGString(canvas, match[0], target); notify("Pasted SVG"); const obj = canvas.getActiveObject(); if (obj) addToGallery(obj); return; } }
             const txt = dt.getData("text/plain");
-            if (txt && /^\s*<svg[\s\S]*<\/svg>\s*$/i.test(txt)) { e.preventDefault(); await addSVGString(canvas, txt, target); notify("Pasted SVG"); const obj = canvas.getActiveObject(); if (obj) addToGallery(obj); }
+            if (txt) {
+                if (/^\s*<svg[\s\S]*<\/svg>\s*$/i.test(txt)) { e.preventDefault(); await addSVGString(canvas, txt, target); notify("Pasted SVG"); const obj = canvas.getActiveObject(); if (obj) addToGallery(obj); return; }
+                // Plain text -> create a text object (do NOT add to gallery per requirements)
+                if (txt.trim().length > 0) {
+                    e.preventDefault();
+                    const textObj = new fabric.IText(txt, {
+                        left: target.x,
+                        top: target.y,
+                        fontFamily: 'Inter, system-ui, sans-serif',
+                        fontSize: 28,
+                        fill: '#111827'
+                    });
+                    canvas.add(textObj);
+                    canvas.setActiveObject(textObj);
+                    textObj.setCoords();
+                    canvas.requestRenderAll();
+                    notify('Pasted Text');
+                    return;
+                }
+            }
         };
         window.addEventListener("paste", handlePasteEvent);
 
@@ -383,7 +413,31 @@ export const useFabricCanvas = (): FabricCanvasHook => {
                 canvas.discardActiveObject();
                 canvas.setCursor('grabbing');
                 canvas.renderAll();
-            } else if (activeTool !== 'pointer' && activeTool !== 'pan' && e && e.button === 0) {
+            } else if (activeTool === 'text' && e && e.button === 0) {
+                // Insert a new editable text object at pointer and immediately enter editing.
+                const textObj = new fabric.IText('', {
+                    left: lastPointerRef.current!.x,
+                    top: lastPointerRef.current!.y,
+                    fontFamily: 'Inter, system-ui, sans-serif',
+                    fontSize: 32,
+                    fill: '#111827',
+                    lineHeight: 1.15,
+                    splitByGrapheme: true, // better caret positioning for complex scripts
+                });
+                canvas.add(textObj);
+                canvas.setActiveObject(textObj);
+                textObj.enterEditing();
+                (textObj as any).hiddenTextarea && (textObj as any).hiddenTextarea.focus();
+                textObj.on('editing:exited', () => {
+                    // Remove empty text nodes to avoid clutter
+                    if (!textObj.text || !textObj.text.trim()) {
+                        canvas.remove(textObj);
+                    }
+                    canvas.requestRenderAll();
+                });
+                canvas.requestRenderAll();
+                setTool('pointer'); // revert to pointer after insertion for fluid workflow
+            } else if (activeTool !== 'pointer' && activeTool !== 'pan' && activeTool !== 'text' && e && e.button === 0) {
                 // Initiate shape creation (drag-based)
                 beginCreation(activeTool as ShapeKind, new fabric.Point(lastPointerRef.current!.x, lastPointerRef.current!.y));
                 // Avoid immediate selection flicker
