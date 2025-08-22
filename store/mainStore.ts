@@ -1,7 +1,7 @@
 "use client";
 import { create } from "zustand";
 import { CanvasTool } from "@/hooks/useFabricCanvas";
-import type * as fabric from "fabric";
+import * as fabric from "fabric";
 import { toast } from "sonner";
 import { stableHash } from "@/lib/utils";
 
@@ -34,12 +34,28 @@ interface Mainstore {
     tool: CanvasTool;
     setTool: (t: CanvasTool) => void;
     gallery: GalleryItem[];
-    addToGallery: (obj: fabric.Object | fabric.ActiveSelection) => Promise<void>;
+    /**
+     * Add a fabric object (single / image / activeSelection) to the gallery.
+     * Returns the GalleryItem (either newly created or the existing bumped one).
+     */
+    addToGallery: (obj: fabric.Object | fabric.ActiveSelection) => Promise<GalleryItem>;
     clearGallery: () => void;
     removeFromGallery: (id: string) => void;
 }
 
-const genId = () => Math.random().toString(36).slice(2, 11);
+const genId = () => {
+    if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) return crypto.randomUUID();
+    return Math.random().toString(36).slice(2, 11);
+};
+
+// Maintain an internal checksum index for O(1) dedupe lookups (not exposed in state)
+const checksumIndex = new Map<string, string>(); // checksum -> gallery id
+
+// Whitelisted properties for serialization + a few more style/transform properties for fidelity
+const SERIALIZE_PROPS = [
+    'selectable', 'evented', 'name', 'id', 'left', 'top', 'width', 'height', 'angle', 'scaleX', 'scaleY', 'rx', 'ry',
+    'fill', 'stroke', 'strokeWidth', 'opacity', 'flipX', 'flipY', 'shadow', 'strokeDashArray', 'fontSize', 'fontFamily', 'fontWeight'
+];
 
 export const useMainStore = create<Mainstore>()((set, get) => ({
     tool: "pointer",
@@ -47,16 +63,15 @@ export const useMainStore = create<Mainstore>()((set, get) => ({
     gallery: [],
     addToGallery: async (obj) => {
         const serialize = (o: fabric.Object): SerializedFabricObject => {
-            // toObject typing returns any; cast to our structured subset.
-            const base = (o.toObject?.([
-                'selectable', 'evented', 'name', 'id', 'left', 'top', 'width', 'height', 'angle', 'scaleX', 'scaleY', 'rx', 'ry', 'fill', 'stroke', 'strokeWidth', 'opacity'
-            ]) ?? {}) as Record<string, unknown>;
+            const base = (o.toObject?.(SERIALIZE_PROPS) ?? {}) as Record<string, unknown>;
             return base as SerializedFabricObject;
         };
+
         let payload: GalleryPayload;
         let kind: GalleryItem['kind'] = 'object';
         const isSelection = (obj.type === 'activeSelection');
         const isImage = (obj.type === 'image');
+
         if (isSelection) {
             kind = 'selection';
             const items: SerializedFabricObject[] = [];
@@ -68,8 +83,9 @@ export const useMainStore = create<Mainstore>()((set, get) => ({
         } else {
             payload = serialize(obj as fabric.Object);
         }
-        // Normalize for hash
-        const round = (n: unknown): number | unknown => typeof n === 'number' && isFinite(n) ? Math.round(n * 1000) / 1000 : n;
+
+        // Normalize for hash (position-invariant, tolerant to micro float noise)
+        const round = (n: unknown): number | unknown => typeof n === 'number' && isFinite(n) ? Math.round(n * 100) / 100 : n; // 2dp tolerance
         let normForHash: GalleryPayload = payload;
         try {
             if (kind === 'selection' && Array.isArray(payload) && payload.length) {
@@ -78,53 +94,95 @@ export const useMainStore = create<Mainstore>()((set, get) => ({
                 const minLeft = Math.min(...lefts);
                 const minTop = Math.min(...tops);
                 normForHash = payload.map(p => {
-                    const { left, top, ...rest } = p;
-                    return { ...rest, left: round((left ?? 0) - minLeft), top: round((top ?? 0) - minTop) } as SerializedFabricObject;
+                    const { left, top, angle, ...rest } = p;
+                    return { ...rest, angle: round(angle), left: round((left ?? 0) - minLeft), top: round((top ?? 0) - minTop) } as SerializedFabricObject;
                 });
             } else if (payload && !Array.isArray(payload) && typeof payload === 'object') {
-                const { left, top, ...rest } = payload as SerializedFabricObject;
-                normForHash = { ...rest, left: 0, top: 0 } as SerializedFabricObject;
+                const { left, top, angle, ...rest } = payload as SerializedFabricObject;
+                normForHash = { ...rest, angle: round(angle), left: 0, top: 0 } as SerializedFabricObject;
             }
         } catch (e) {
             console.warn('Normalization for hash failed', e);
         }
+
+        // Compute checksum. If it fails, dedupe is skipped for this item.
         let checksum = '';
-        try { checksum = await stableHash(normForHash); } catch (e) { console.warn("stableHash failed", e); }
-        if (checksum) {
-            const existing = get().gallery.find(g => g.checksum === checksum);
-            if (existing) {
-                const remainder = get().gallery.filter(g => g.id !== existing.id);
-                const bumped = { ...existing, addedAt: Date.now() };
-                set({ gallery: [bumped, ...remainder].slice(0, 200) });
-                (toast as any).message?.("Resource already in gallery – bumped to top") || toast("Resource already in gallery – bumped to top");
-                return;
+        try { checksum = await stableHash(normForHash); } catch (e) { console.warn('stableHash failed', e); }
+
+        // Fast O(1) dedupe via checksumIndex (only if checksum produced)
+        if (checksum && checksumIndex.has(checksum)) {
+            const existingId = checksumIndex.get(checksum)!;
+            let bumpedItem: GalleryItem | undefined;
+            set(state => {
+                const idx = state.gallery.findIndex(g => g.id === existingId);
+                if (idx === -1) return state; // index drift; ignore
+                const existing = state.gallery[idx];
+                bumpedItem = { ...existing, addedAt: Date.now() };
+                const newGallery = [bumpedItem!, ...state.gallery.slice(0, idx), ...state.gallery.slice(idx + 1)];
+                return { ...state, gallery: newGallery.slice(0, 200) };
+            });
+            if (bumpedItem) {
+                (toast as any).message?.('Resource already in gallery – bumped to top') || toast('Resource already in gallery – bumped to top');
+                return bumpedItem!;
             }
         }
-        // Thumbnail generation
-        const canvasEl = document.createElement('canvas');
-        // Some objects (cloned) may not have canvas yet; _canvas is private, access guarded.
-        const fabricCanvas = (obj.canvas || (obj as unknown as { _canvas?: fabric.Canvas })._canvas) as fabric.Canvas | undefined;
+
+        // Thumbnail generation (crop to bounding box; limit max dimension)
         let dataUrl = '';
+        const MAX_DIM = 256;
         try {
-            if (fabricCanvas) {
-                const origSel = fabricCanvas.getActiveObject();
-                const maybeObj = obj as fabric.Object & { toDataURL?: (opts?: any) => string };
-                dataUrl = maybeObj.toDataURL?.({ format: 'png', multiplier: 0.5 }) || fabricCanvas.toDataURL({ format: 'png', multiplier: 0.5 });
-                if (origSel) fabricCanvas.setActiveObject(origSel);
-            } else {
-                const bb = obj.getBoundingRect?.();
-                if (bb) { canvasEl.width = Math.max(32, Math.min(512, bb.width)); canvasEl.height = Math.max(32, Math.min(512, bb.height)); }
-                dataUrl = canvasEl.toDataURL('image/png');
+            const fabricCanvas = (obj.canvas || (obj as unknown as { _canvas?: fabric.Canvas })._canvas) as fabric.Canvas | undefined;
+            const bb = obj.getBoundingRect?.();
+            if (fabricCanvas && bb) {
+                const scale = Math.min(MAX_DIM / bb.width, MAX_DIM / bb.height, 1);
+                dataUrl = fabricCanvas.toDataURL({
+                    format: 'png',
+                    left: bb.left, top: bb.top, width: bb.width, height: bb.height,
+                    multiplier: scale
+                });
+            } else if (bb) {
+                // Render offscreen using a temporary StaticCanvas for orphan objects
+                const off = document.createElement('canvas');
+                const w = Math.min(MAX_DIM, Math.max(16, bb.width));
+                const h = Math.min(MAX_DIM, Math.max(16, bb.height));
+                off.width = w; off.height = h;
+                // Use fabric if available to render (avoids blank thumbnails)
+                try {
+                    const temp = new (fabric as any).StaticCanvas(off, { renderOnAddRemove: true });
+                    const cloned = await (obj as fabric.Object).clone();
+                    cloned.set({ left: w / 2 - (bb.width / 2), top: h / 2 - (bb.height / 2) });
+                    temp.add(cloned);
+                    temp.renderAll();
+                    dataUrl = off.toDataURL('image/png');
+                    temp.dispose?.();
+                } catch {
+                    dataUrl = off.toDataURL('image/png');
+                }
             }
         } catch (e) {
-            console.warn("Thumbnail generation failed", e);
+            console.warn('Thumbnail generation failed', e);
             toast.error("Couldn't generate preview thumbnail. Object still added.");
         }
+        // If still empty create minimal transparent pixel to avoid broken img tags
+        if (!dataUrl) {
+            dataUrl = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGMAAQAABQABDQottAAAAABJRU5ErkJggg==';
+        }
+
         const newItem: GalleryItem = { id: genId(), kind, preview: dataUrl, payload, checksum, addedAt: Date.now() };
-        set({ gallery: [newItem, ...get().gallery].slice(0, 200) });
+        if (checksum) checksumIndex.set(checksum, newItem.id);
+        let finalItem = newItem;
+        set(state => ({ ...state, gallery: [newItem, ...state.gallery].slice(0, 200) }));
+        return finalItem;
     },
-    clearGallery: () => set({ gallery: [] }),
-    removeFromGallery: (id: string) => set({ gallery: get().gallery.filter(g => g.id !== id) }),
+    clearGallery: () => {
+        checksumIndex.clear();
+        set({ gallery: [] });
+    },
+    removeFromGallery: (id: string) => set(state => {
+        const item = state.gallery.find(g => g.id === id);
+        if (item?.checksum) checksumIndex.delete(item.checksum);
+        return { ...state, gallery: state.gallery.filter(g => g.id !== id) };
+    }),
 }));
 
 export type { Mainstore };
