@@ -1,12 +1,12 @@
 "use client";
 
-import { useCallback } from "react";
+import { useCallback, useState } from "react";
 import * as fabric from "fabric";
 import { getCanvasCenterWorld } from "@/lib/fabric/utils";
 import { useMainStore } from "@/store/mainStore";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { MousePointer2, Square, Circle, Library } from "lucide-react";
+import { MousePointer2, Square, Circle, Library, Hand, X } from "lucide-react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from "./ui/dropdown-menu";
 import { ScrollArea } from "./ui/scroll-area";
 import { Separator } from "./ui/separator";
@@ -19,35 +19,39 @@ export const Toolbar = () => {
 
     const handleChange = useCallback((value: string) => {
         if (!value) return; // ignore unselect
-        setTool(value as any);
+        setTool(value as ToolId);
     }, [setTool]);
 
-    type ToolId = "pointer" | "rect" | "circle";
+    type ToolId = "pointer" | "pan" | "rect" | "circle";
     const tools: { id: ToolId; label: string; icon: React.ComponentType<any>; }[] = [
         { id: "pointer", label: "Pointer (V)", icon: MousePointer2 },
+        { id: "pan", label: "Pan / Hand (H or Middle Drag)", icon: Hand },
         { id: "rect", label: "Rectangle (R)", icon: Square },
         { id: "circle", label: "Circle (C)", icon: Circle },
     ];
     const gallery = useMainStore(s => s.gallery);
+    const removeFromGallery = useMainStore(s => s.removeFromGallery);
+    const [galleryOpen, setGalleryOpen] = useState(false);
     const kindLabels: Record<string, string> = { image: "Image", object: "Object", selection: "Group", unknown: "Resource" };
     const friendlyKind = (k: string): string => kindLabels[k] ?? "Resource";
     // Gallery insertion rehydrates serialized objects back onto the live fabric canvas
     const handleInsert = useCallback((itemId: string) => {
-        const canvas = (window as any).fabricCanvas as fabric.Canvas | undefined;
+        const canvas = window.fabricCanvas;
         if (!canvas) return;
         const item = gallery.find(g => g.id === itemId); if (!item) return;
         const center = getCanvasCenterWorld(canvas);
         const addAndCenter = (objs: fabric.Object[]) => {
             objs.forEach(o => { o.set({ evented: true }); canvas.add(o); });
             if (objs.length === 1) {
-                (objs[0] as any).setPositionByOrigin(center, 'center', 'center');
+                objs[0].setPositionByOrigin(center, 'center', 'center');
                 canvas.setActiveObject(objs[0]);
             } else if (objs.length > 1) {
-                const sel = new (fabric as any).ActiveSelection(objs, { canvas });
+                const sel = new fabric.ActiveSelection(objs, { canvas });
                 sel.setPositionByOrigin(center, 'center', 'center');
                 canvas.setActiveObject(sel);
             }
             canvas.requestRenderAll();
+            setGalleryOpen(false);
         };
         const descriptors = Array.isArray(item.payload) ? item.payload : [item.payload];
         Promise.resolve((fabric.util as any).enlivenObjects(descriptors))
@@ -83,7 +87,7 @@ export const Toolbar = () => {
                         );
                     })}
                     <Separator orientation="vertical" className="mx-1" />
-                    <DropdownMenu>
+                    <DropdownMenu open={galleryOpen} onOpenChange={setGalleryOpen}>
                         <Tooltip>
                             <DropdownMenuTrigger asChild>
                                 <button aria-label="Resources Gallery" className="size-9 rounded-md hover:bg-accent/50 inline-flex items-center justify-center text-foreground/80">
@@ -109,12 +113,14 @@ export const Toolbar = () => {
                                     {gallery.map(item => (
                                         <HoverCard key={item.id} openDelay={120} closeDelay={80}>
                                             <HoverCardTrigger asChild>
-                                                <button
-                                                    type="button"
+                                                <div
+                                                    role="button"
+                                                    tabIndex={0}
                                                     aria-label={`Insert ${friendlyKind(item.kind)}`}
                                                     title={friendlyKind(item.kind)}
                                                     onClick={() => handleInsert(item.id)}
-                                                    className="group relative aspect-square w-full overflow-hidden rounded-md border bg-muted/30 backdrop-blur-sm transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+                                                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleInsert(item.id); } }}
+                                                    className="group relative aspect-square w-full overflow-hidden rounded-md border bg-muted/30 backdrop-blur-sm transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background cursor-pointer"
                                                 >
                                                     <div className="absolute inset-0 flex items-center justify-center p-1">
                                                         <img
@@ -124,11 +130,19 @@ export const Toolbar = () => {
                                                             draggable={false}
                                                         />
                                                     </div>
+                                                    <button
+                                                        type="button"
+                                                        aria-label="Remove from gallery"
+                                                        onClick={(e) => { e.stopPropagation(); removeFromGallery(item.id); }}
+                                                        className="absolute top-1 right-1 z-10 inline-flex items-center justify-center rounded-sm bg-background/80 text-muted-foreground hover:text-foreground hover:bg-background px-1 h-5 transition-colors ring-1 ring-border/60 backdrop-blur-sm"
+                                                    >
+                                                        <X className="h-3.5 w-3.5" />
+                                                    </button>
                                                     <div className="pointer-events-none absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-200 bg-gradient-to-t from-background/70 via-background/10 to-transparent" />
                                                     <span className="pointer-events-none absolute bottom-1 left-1 inline-flex items-center rounded-sm bg-background/80 px-1.5 py-0.5 text-[10px] font-medium text-foreground shadow-sm ring-1 ring-border/60 backdrop-blur-sm transition-opacity duration-200 group-hover:opacity-100">
                                                         {friendlyKind(item.kind)}
                                                     </span>
-                                                </button>
+                                                </div>
                                             </HoverCardTrigger>
                                             <HoverCardContent side="right" className="w-auto p-2">
                                                 <div className="relative flex items-center justify-center rounded-md border bg-background/60 backdrop-blur-sm p-2 shadow-sm">

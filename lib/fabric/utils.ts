@@ -1,12 +1,12 @@
 import * as fabric from "fabric";
 
-export const centerObjectAt = (obj: any, target: fabric.Point) => {
+export const centerObjectAt = (obj: fabric.Object, target: fabric.Point) => {
     obj.setPositionByOrigin(new fabric.Point(target.x, target.y), "center", "center");
     obj.setCoords();
 };
 
-export const addObjectsAsSelection = (objects: any[], canvas: fabric.Canvas, target: fabric.Point) => {
-    const selection = new (fabric as any).ActiveSelection(objects, { canvas });
+export const addObjectsAsSelection = (objects: fabric.Object[], canvas: fabric.Canvas, target: fabric.Point) => {
+    const selection = new fabric.ActiveSelection(objects, { canvas });
     centerObjectAt(selection, target);
     canvas.setActiveObject(selection);
     canvas.requestRenderAll();
@@ -27,7 +27,7 @@ export const getCanvasCenterWorld = (canvas: fabric.Canvas) => {
 };
 
 // Unified helper: find world-space center of current viewport & center object/selection there
-export const centerInViewport = (canvas: fabric.Canvas, obj: fabric.Object | any) => {
+export const centerInViewport = (canvas: fabric.Canvas, obj: fabric.Object) => {
     const center = getCanvasCenterWorld(canvas);
     centerObjectAt(obj, center);
 };
