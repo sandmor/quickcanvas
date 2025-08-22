@@ -159,7 +159,7 @@ export const copyToSystemClipboard = async (
 
     if (navigator.clipboard && (navigator.clipboard as any).write && Object.keys(items).length) {
         try {
-            const clipboardItem = new (window as any).ClipboardItem(items);
+            const clipboardItem = new window.ClipboardItem(items as any);
             await (navigator.clipboard as any).write([clipboardItem]);
             setStatus("Copied to system clipboard");
             return true;

@@ -1,6 +1,6 @@
 import * as fabric from 'fabric';
 
-const ensureObjectId = (obj: fabric.Object): string => {
+export const ensureObjectId = (obj: fabric.Object): string => {
     const anyObj = obj as any;
     if (!anyObj.qcId) {
         anyObj.qcId = (typeof crypto !== 'undefined' && (crypto as any).randomUUID)
@@ -154,6 +154,39 @@ export const recordModify = async (canvas: fabric.Canvas, before: SerializedStat
             before.forEach(st => { if (!applyStateToExisting(canvas, st)) enlivenState(canvas, st); });
             canvas.requestRenderAll();
         }
+    };
+    await commandManager.perform(cmd, alreadyApplied);
+};
+
+// Record a pure z-order change (stacking order) which isn't captured by object JSON state.
+export const recordReorder = async (
+    canvas: fabric.Canvas,
+    beforeOrder: string[],
+    afterOrder: string[],
+    label = 'Reorder',
+    alreadyApplied = true
+) => {
+    if (beforeOrder.join(',') === afterOrder.join(',')) return; // no-op
+    const applyOrder = (order: string[]) => {
+        const existing = canvas.getObjects();
+        existing.forEach(o => ensureObjectId(o));
+        const map = new Map(existing.map(o => [(o as any).qcId as string, o]));
+        // Build list in desired order; append any stray objects not referenced to preserve them.
+        const ordered: fabric.Object[] = [];
+        order.forEach(id => { const obj = map.get(id); if (obj) ordered.push(obj); });
+        existing.forEach(o => { const id = (o as any).qcId as string; if (!order.includes(id)) ordered.push(o); });
+        // Efficiently reinsert: remove all then add in order (avoids touching background/overlay settings)
+        existing.slice().forEach(o => canvas.remove(o));
+        ordered.forEach(o => canvas.add(o));
+        canvas.discardActiveObject();
+        canvas.requestRenderAll();
+    };
+    const cmd: Command = {
+        id: Math.random().toString(36).slice(2),
+        label,
+        stamp: Date.now(),
+        execute: () => applyOrder(afterOrder),
+        undo: () => applyOrder(beforeOrder)
     };
     await commandManager.perform(cmd, alreadyApplied);
 };

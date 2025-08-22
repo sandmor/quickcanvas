@@ -21,8 +21,6 @@ export interface FabricCanvasHook {
     setTool: (t: CanvasTool) => void;
 }
 
-// CanvasTool type moved to '@/types/canvas' for reuse without circular deps.
-
 export const useFabricCanvas = (): FabricCanvasHook => {
     // Use explicit possibly-null element ref but cast on return to align with consumer expectations
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -209,6 +207,7 @@ export const useFabricCanvas = (): FabricCanvasHook => {
             fireMiddleClick: true,
             stopContextMenu: true,
             selection: true,
+            preserveObjectStacking: true,
             // Slightly refine selection aesthetics for clarity
             selectionBorderColor: '#3b82f6',
             selectionColor: 'rgba(59,130,246,0.08)',

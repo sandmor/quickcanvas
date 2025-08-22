@@ -12,7 +12,7 @@ import { exportActiveOrCanvasToPNGBlob } from "@/lib/fabric/export";
 export const DownloadButton = () => {
     const [busy, setBusy] = useState(false);
     const handleDownload = useCallback(async () => {
-        const canvas = (window as any).fabricCanvas as any;
+        const canvas = window.fabricCanvas;
         if (!canvas) { toast.error("Canvas not ready"); return; }
         try {
             setBusy(true);

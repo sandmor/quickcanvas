@@ -8,6 +8,9 @@ declare module 'fabric' {
         lastPosY?: number;
         _groupSelector?: unknown; // internal fabric field accessed defensively
     }
+    interface FabricObject {
+        qcId?: string; // internal quickcanvas id for history tracking
+    }
 }
 
 declare global {

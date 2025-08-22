@@ -5,6 +5,7 @@ import { CanvasTool } from "@/types/canvas";
 import * as fabric from "fabric";
 import { toast } from "sonner";
 import { stableHash } from "@/lib/utils";
+import { recordReorder, ensureObjectId } from '@/lib/history/commandManager';
 
 // Representation of a gallery resource (persisted in-memory for now)
 // We store: id, kind, a lightweight preview (dataURL), and a serialized object JSON
@@ -44,6 +45,10 @@ interface Mainstore {
     setSelectionFromCanvas: (canvas: fabric.Canvas) => void;
     applyFillToSelection: (canvas: fabric.Canvas, color: string) => void;
     deleteSelection: (canvas: fabric.Canvas) => void;
+    bringForward: (canvas: fabric.Canvas) => void;
+    sendBackward: (canvas: fabric.Canvas) => void;
+    bringToFront: (canvas: fabric.Canvas) => void;
+    sendToBack: (canvas: fabric.Canvas) => void;
     gallery: GalleryItem[];
     /**
      * Add a fabric object (single / image / activeSelection) to the gallery.
@@ -102,6 +107,59 @@ export const useMainStore = create<Mainstore>()((set, get) => ({
         }
         canvas.discardActiveObject(); canvas.requestRenderAll();
         set({ selection: { has: false, type: null, editingText: false, fill: null } });
+    },
+    bringForward: (canvas) => {
+        const active = canvas.getActiveObject(); if (!active) return;
+        const selection: fabric.Object[] = [];
+        if (active.type === 'activeSelection') (active as fabric.ActiveSelection).forEachObject(o => selection.push(o)); else selection.push(active);
+        if (!selection.length) return;
+        canvas.getObjects().forEach(ensureObjectId);
+        const before = canvas.getObjects().map(o => o.qcId || '');
+        // Move each object one step forward preserving relative order (topmost first)
+        const ordered = [...selection].sort((a, b) => canvas._objects.indexOf(b) - canvas._objects.indexOf(a));
+        ordered.forEach(o => (canvas as any).bringObjectForward?.(o) ?? canvas.bringObjectForward(o));
+        const after = canvas.getObjects().map(o => o.qcId || '');
+        recordReorder(canvas, before, after, 'Bring Forward');
+        get().setSelectionFromCanvas(canvas); // trigger UI update for disable logic
+    },
+    sendBackward: (canvas) => {
+        const active = canvas.getActiveObject(); if (!active) return;
+        const selection: fabric.Object[] = [];
+        if (active.type === 'activeSelection') (active as fabric.ActiveSelection).forEachObject(o => selection.push(o)); else selection.push(active);
+        if (!selection.length) return;
+        canvas.getObjects().forEach(ensureObjectId);
+        const before = canvas.getObjects().map(o => o.qcId || '');
+        const ordered = [...selection].sort((a, b) => canvas._objects.indexOf(a) - canvas._objects.indexOf(b));
+        ordered.forEach(o => (canvas as any).sendObjectBackwards?.(o) ?? canvas.sendObjectBackwards(o));
+        const after = canvas.getObjects().map(o => o.qcId || '');
+        recordReorder(canvas, before, after, 'Send Backward');
+        get().setSelectionFromCanvas(canvas);
+    },
+    bringToFront: (canvas) => {
+        const active = canvas.getActiveObject(); if (!active) return;
+        const selection: fabric.Object[] = [];
+        if (active.type === 'activeSelection') (active as fabric.ActiveSelection).forEachObject(o => selection.push(o)); else selection.push(active);
+        if (!selection.length) return;
+        canvas.getObjects().forEach(ensureObjectId);
+        const before = canvas.getObjects().map(o => o.qcId || '');
+        const ordered = [...selection].sort((a, b) => canvas._objects.indexOf(a) - canvas._objects.indexOf(b));
+        ordered.forEach(o => (canvas as any).bringObjectToFront?.(o) ?? canvas.bringObjectToFront(o));
+        const after = canvas.getObjects().map(o => o.qcId || '');
+        recordReorder(canvas, before, after, 'Bring To Front');
+        get().setSelectionFromCanvas(canvas);
+    },
+    sendToBack: (canvas) => {
+        const active = canvas.getActiveObject(); if (!active) return;
+        const selection: fabric.Object[] = [];
+        if (active.type === 'activeSelection') (active as fabric.ActiveSelection).forEachObject(o => selection.push(o)); else selection.push(active);
+        if (!selection.length) return;
+        canvas.getObjects().forEach(ensureObjectId);
+        const before = canvas.getObjects().map(o => o.qcId || '');
+        const ordered = [...selection].sort((a, b) => canvas._objects.indexOf(b) - canvas._objects.indexOf(a));
+        ordered.forEach(o => (canvas as any).sendObjectToBack?.(o) ?? canvas.sendObjectToBack(o));
+        const after = canvas.getObjects().map(o => o.qcId || '');
+        recordReorder(canvas, before, after, 'Send To Back');
+        get().setSelectionFromCanvas(canvas);
     },
     gallery: [],
     addToGallery: async (obj) => {
