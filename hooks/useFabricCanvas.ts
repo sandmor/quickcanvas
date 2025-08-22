@@ -9,6 +9,7 @@ import { classifyClipboardObject, FabricClipboardEntry, isActiveSelection } from
 import { toast } from "sonner";
 import { useMainStore } from "@/store/mainStore";
 import { CanvasTool } from "@/types/canvas";
+import { commandManager, recordAddObjects, recordRemoveObjects, recordModify, snapshotObjects } from '@/lib/history/commandManager';
 
 export interface FabricCanvasHook {
     canvasRef: React.RefObject<HTMLCanvasElement>;
@@ -99,12 +100,10 @@ export const useFabricCanvas = (): FabricCanvasHook => {
         clipboardRef.current = classifyClipboardObject(cloned as fabric.Object);
         await copyToSystemClipboard(activeObject, notify);
         if (isActiveSelection(activeObject)) {
-            activeObject.forEachObject((obj: fabric.Object) => canvas.remove(obj));
+            await recordRemoveObjects(canvas, (activeObject as fabric.ActiveSelection)._objects as fabric.Object[], 'Cut');
         } else {
-            canvas.remove(activeObject);
+            await recordRemoveObjects(canvas, activeObject as fabric.Object, 'Cut');
         }
-        canvas.discardActiveObject();
-        canvas.requestRenderAll();
         setSelectionFromCanvas(canvas);
     }, [notify]);
 
@@ -115,8 +114,8 @@ export const useFabricCanvas = (): FabricCanvasHook => {
             canvas,
             targetPoint,
             notify,
-            async (blob) => { await addImageBlob(canvas, blob, targetPoint, notify); const obj = canvas.getActiveObject(); if (obj) addToGallery(obj); },
-            async (svg) => { await addSVGString(canvas, svg, targetPoint); const obj = canvas.getActiveObject(); if (obj) addToGallery(obj); /* notify handled inside tryReadFromSystemClipboard */ }
+            async (blob) => { await addImageBlob(canvas, blob, targetPoint, notify); const obj = canvas.getActiveObject(); if (obj) { addToGallery(obj); recordAddObjects(canvas, obj, 'Paste image'); } },
+            async (svg) => { await addSVGString(canvas, svg, targetPoint); const obj = canvas.getActiveObject(); if (obj) { addToGallery(obj); recordAddObjects(canvas, obj, 'Paste SVG'); } /* notify handled inside tryReadFromSystemClipboard */ }
         );
         if (didSystem) return;
         const entry = clipboardRef.current;
@@ -135,12 +134,14 @@ export const useFabricCanvas = (): FabricCanvasHook => {
             centerObjectAt(selection, targetPoint); // still respect pointer if available
             canvas.setActiveObject(selection);
             addToGallery(selection);
+            recordAddObjects(canvas, pasted, 'Paste selection');
         } else if (entry.kind === "image" || entry.kind === "object") {
             clonedObj.set({ evented: true });
             centerObjectAt(clonedObj, targetPoint);
             canvas.add(clonedObj);
             canvas.setActiveObject(clonedObj);
             addToGallery(clonedObj);
+            recordAddObjects(canvas, clonedObj, 'Paste');
         }
         canvas.requestRenderAll();
         setSelectionFromCanvas(canvas);
@@ -177,10 +178,14 @@ export const useFabricCanvas = (): FabricCanvasHook => {
     const finalizeCreation = () => {
         const canvas = fabricCanvasRef.current; if (!canvas) return;
         const ctx = creationRef.current; if (!ctx) return;
+        let created: fabric.Object | null = null;
         if (ctx.started && ctx.object) {
-            finalizeDraggingShape(canvas, ctx);
+            created = finalizeDraggingShape(canvas, ctx);
         } else {
-            insertShape(canvas, ctx.kind, { at: ctx.origin, autoSelect: true });
+            created = insertShape(canvas, ctx.kind, { at: ctx.origin, autoSelect: true });
+        }
+        if (created) {
+            recordAddObjects(canvas, created, `Add ${ctx.kind}`);
         }
         if (creationEnvRef.current) {
             canvas.selection = creationEnvRef.current.prevSelection;
@@ -244,6 +249,8 @@ export const useFabricCanvas = (): FabricCanvasHook => {
             if (key === "c") { e.preventDefault(); copy(); }
             else if (key === "x") { e.preventDefault(); cut(); }
             else if (key === "v") { e.preventDefault(); suppressNextDomPasteRef.current = true; paste(); }
+            else if (key === 'z') { e.preventDefault(); if (e.shiftKey) { commandManager.redo(); } else { commandManager.undo(); } canvas?.requestRenderAll(); setSelectionFromCanvas(canvas!); }
+            else if (key === 'y') { e.preventDefault(); commandManager.redo(); canvas?.requestRenderAll(); setSelectionFromCanvas(canvas!); }
             else if (key === 'a' && canvas) { // Select all
                 e.preventDefault();
                 const objs = canvas.getObjects().filter(o => o.selectable !== false);
@@ -264,12 +271,10 @@ export const useFabricCanvas = (): FabricCanvasHook => {
                 const active: any = canvas.getActiveObject();
                 if (active && !(active.type === 'i-text' && active.isEditing)) {
                     if (isActiveSelection(active)) {
-                        active.forEachObject((obj: fabric.Object) => canvas.remove(obj));
+                        recordRemoveObjects(canvas, (active as fabric.ActiveSelection)._objects as fabric.Object[], 'Delete');
                     } else {
-                        canvas.remove(active);
+                        recordRemoveObjects(canvas, active as fabric.Object, 'Delete');
                     }
-                    canvas.discardActiveObject();
-                    canvas.requestRenderAll();
                     setSelectionFromCanvas(canvas);
                 }
             }
@@ -403,6 +408,17 @@ export const useFabricCanvas = (): FabricCanvasHook => {
         canvas.on("mouse:down", (opt) => {
             const e = opt.e as any;
             const pt = canvas.getScenePoint(e); lastPointerRef.current = new fabric.Point(pt.x, pt.y);
+            // Snapshot object state for potential transform command recording
+            if ((opt as any).target) {
+                const tgt = (opt as any).target as any;
+                if (tgt.type === 'activeSelection') {
+                    const objs: fabric.Object[] = [];
+                    (tgt as fabric.ActiveSelection).forEachObject((o: fabric.Object) => objs.push(o));
+                    (tgt as any).__qcBefore = snapshotObjects(objs);
+                } else {
+                    (tgt as any).__qcBefore = snapshotObjects(tgt);
+                }
+            }
             const activeTool = toolRef.current;
             const isMiddle = e && e.button === 1;
             const isRight = e && e.button === 2;
@@ -433,10 +449,13 @@ export const useFabricCanvas = (): FabricCanvasHook => {
                 canvas.setActiveObject(textObj);
                 textObj.enterEditing();
                 (textObj as any).hiddenTextarea && (textObj as any).hiddenTextarea.focus();
+                const before = snapshotObjects(textObj);
                 textObj.on('editing:exited', () => {
-                    // Remove empty text nodes to avoid clutter
                     if (!textObj.text || !textObj.text.trim()) {
-                        canvas.remove(textObj);
+                        recordRemoveObjects(canvas, textObj, 'Remove empty text');
+                    } else {
+                        const after = snapshotObjects(textObj);
+                        recordModify(canvas, before, after, 'Edit text');
                     }
                     canvas.requestRenderAll();
                     setSelectionFromCanvas(canvas);
@@ -444,6 +463,7 @@ export const useFabricCanvas = (): FabricCanvasHook => {
                 canvas.requestRenderAll();
                 setTool('pointer'); // revert to pointer after insertion for fluid workflow
                 setSelectionFromCanvas(canvas);
+                recordAddObjects(canvas, textObj, 'Add text');
             } else if (activeTool !== 'pointer' && activeTool !== 'pan' && activeTool !== 'text' && e && e.button === 0) {
                 // Initiate shape creation (drag-based)
                 beginCreation(activeTool as ShapeKind, new fabric.Point(lastPointerRef.current!.x, lastPointerRef.current!.y));
@@ -489,6 +509,22 @@ export const useFabricCanvas = (): FabricCanvasHook => {
         canvas.on('selection:updated', pushSelection);
         canvas.on('selection:cleared', pushSelection);
         canvas.on('text:editing:exited', pushSelection as any);
+        // Track transforms -> record modify command
+        canvas.on('object:modified', (opt: any) => {
+            const target = opt.target as any; if (!target) return;
+            const before = (target as any).__qcBefore as any[] | undefined;
+            if (!before) return;
+            let after: any[];
+            if (target.type === 'activeSelection') {
+                const objs: fabric.Object[] = [];
+                (target as fabric.ActiveSelection).forEachObject((o: fabric.Object) => objs.push(o));
+                after = snapshotObjects(objs);
+            } else {
+                after = snapshotObjects(target);
+            }
+            recordModify(canvas, before, after, 'Transform');
+            delete (target as any).__qcBefore;
+        });
         pushSelection();
 
         return () => {
