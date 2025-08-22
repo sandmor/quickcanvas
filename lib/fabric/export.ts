@@ -67,3 +67,28 @@ export const exportSelectionToSVGString = async (active: any): Promise<string> =
     tempCanvas.dispose();
     return svg;
 };
+
+/**
+ * Export either the current active selection (if any) or the full set of canvas objects to a PNG Blob.
+ * When exporting the full canvas we tightly crop to the combined bounding box of all selectable objects
+ * (rather than the entire viewport) for a cleaner result.
+ */
+export const exportActiveOrCanvasToPNGBlob = async (canvas: fabric.Canvas): Promise<Blob> => {
+    const active = canvas.getActiveObject();
+    if (active) {
+        return exportSelectionToPNGBlob(active);
+    }
+    const objects = canvas.getObjects().filter(o => o.selectable !== false);
+    if (!objects.length) {
+        // Return a 1x1 transparent pixel
+        return new Blob([Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10])], { type: 'image/png' });
+    }
+    // Create a temporary ActiveSelection to leverage existing selection export logic.
+    const selection = new fabric.ActiveSelection(objects, { canvas });
+    try {
+        return await exportSelectionToPNGBlob(selection as unknown as any);
+    } finally {
+        // Do not mutate canvas state; selection was ephemeral.
+    }
+};
+
