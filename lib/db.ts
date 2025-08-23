@@ -1,4 +1,5 @@
 import { Dexie, Table } from 'dexie';
+import { stableHash } from '@/lib/utils';
 
 export interface DocumentRecord {
     id: string;               // uuid
@@ -31,8 +32,6 @@ export const db = new QCDB();
 
 // Utility: safe stable hash import (dynamic to avoid SSR issues if window undefined)
 export const computeStableHash = async (payload: any): Promise<string> => {
-    // Keep dependency singular; reuse existing stableHash util so contentHash semantics match gallery dedupe.
-    const { stableHash } = await import('@/lib/utils');
     try { return await stableHash(payload); } catch { return Math.random().toString(36).slice(2); }
 };
 

@@ -4,14 +4,14 @@ import * as fabric from "fabric";
 export const supportsFill = (obj: fabric.Object): boolean => {
     // Exclude images, groups, and active selections themselves.
     const type = (obj as any).type;
-    if (type === 'image' || type === 'activeSelection' || type === 'group') return false;
+    if (type === 'image' || type === 'group' || (obj as any).isType?.('activeselection')) return false;
     if ((obj as any).isType?.('image')) return false;
     return 'fill' in obj;
 };
 
 // If every object in the selection shares the same fill, return it; otherwise null.
 export const extractUnifiedFill = (target: fabric.Object | fabric.ActiveSelection): string | null => {
-    if (target.type === 'activeSelection') {
+    if (target.isType?.('activeselection')) {
         let unified: string | null = null;
         let mixed = false;
         (target as fabric.ActiveSelection).forEachObject((child: fabric.Object) => {
@@ -27,7 +27,7 @@ export const extractUnifiedFill = (target: fabric.Object | fabric.ActiveSelectio
 
 export const applyFillToObjectOrSelection = (target: fabric.Object | fabric.ActiveSelection, color: string) => {
     const assign = (o: fabric.Object) => { if (supportsFill(o)) { (o as any).set?.({ fill: color }); o.setCoords(); } };
-    if (target.type === 'activeSelection') {
+    if (target.isType?.('activeselection')) {
         (target as fabric.ActiveSelection).forEachObject(assign);
     } else {
         assign(target as fabric.Object);

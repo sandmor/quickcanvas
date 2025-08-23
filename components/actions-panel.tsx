@@ -1,17 +1,16 @@
 "use client";
 
-import React, { useCallback, useState } from "react";
+import React, { useState } from "react";
 import * as fabric from "fabric";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { ChevronDown, Layers, FolderOpen, Plus, File as FileIcon, Check, Loader2, Trash2 } from "lucide-react";
+import { ChevronDown, Layers, FolderOpen, Plus, File as FileIcon, Check, Loader2, Trash2, RefreshCcw } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useMainStore } from "@/store/mainStore";
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { FillControl, CornerRadiusControl, LayerControls, DeleteControl } from './selection-controls';
-import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip';
-// (duplicate removed)
+import { commandManager } from '@/lib/history/commandManager';
 
 export const ActionsPanel: React.FC = () => {
     const selection = useMainStore(s => s.selection);
@@ -53,6 +52,8 @@ export const ActionsPanelMobile: React.FC = () => {
     const deleteDocument = useMainStore(s => s.deleteDocument);
     const saveDocument = useMainStore(s => s.saveDocument);
     const [docDialogOpen, setDocDialogOpen] = useState(false);
+    const [deleteDialogId, setDeleteDialogId] = useState<string | null>(null);
+    const [resetOpen, setResetOpen] = useState(false);
     const [filter, setFilter] = useState('');
     const [renamingId, setRenamingId] = useState<string | null>(null);
     const [renameValue, setRenameValue] = useState('');
@@ -61,8 +62,33 @@ export const ActionsPanelMobile: React.FC = () => {
     const filteredDocs = React.useMemo(() => docs.filter(d => d.name.toLowerCase().includes(filter.toLowerCase())), [docs, filter]);
     const openDoc = async (id: string) => { if (id === activeId) { setDocDialogOpen(false); return; } setLoadingDoc(id); try { await loadDocument(id, window.fabricCanvas); } finally { setLoadingDoc(null); setDocDialogOpen(false); } };
     const commitRename = async () => { if (!renamingId) return; const v = renameValue.trim() || 'Untitled'; await renameDocument(renamingId, v); setRenamingId(null); setRenameValue(''); };
-    const deleteDoc = async (id: string) => { if (!confirm('Delete this document?')) return; await deleteDocument(id, window.fabricCanvas); };
+    const requestDelete = (id: string) => setDeleteDialogId(id);
+    const confirmDelete = async () => { if (!deleteDialogId) return; await deleteDocument(deleteDialogId, window.fabricCanvas); setDeleteDialogId(null); };
     const saveNow = () => saveDocument(window.fabricCanvas, { force: true });
+    const triggerReset = () => {
+        const canvas = window.fabricCanvas as fabric.Canvas | undefined;
+        const hasContent = !!canvas && canvas.getObjects().length > 0;
+        if (!hasContent) {
+            createDocument('Untitled').then(() => { canvas?.clear(); canvas?.renderAll(); commandManager.clear(); });
+            return;
+        }
+        setResetOpen(true);
+    };
+    const resetSave = async () => {
+        const canvas = window.fabricCanvas as fabric.Canvas | undefined;
+        await saveDocument(canvas, { force: true });
+        await createDocument('Untitled');
+        canvas?.clear(); canvas?.renderAll();
+        commandManager.clear();
+        setResetOpen(false);
+    };
+    const resetDiscard = async () => {
+        const canvas = window.fabricCanvas as fabric.Canvas | undefined;
+        const id = activeId; if (id) await deleteDocument(id, canvas);
+        canvas?.clear(); canvas?.renderAll();
+        commandManager.clear();
+        setResetOpen(false);
+    };
     const fns = {
         applyFillToSelection: useMainStore(s => s.applyFillToSelection),
         applyRectCornerRadiusToSelection: useMainStore(s => s.applyRectCornerRadiusToSelection),
@@ -86,6 +112,7 @@ export const ActionsPanelMobile: React.FC = () => {
                             </DropdownMenuTrigger>
                             <DropdownMenuContent side="top" align="start" className="w-56">
                                 <DropdownMenuItem onClick={() => createDocument('Untitled')} className="gap-2"><Plus className="h-4 w-4" /> New</DropdownMenuItem>
+                                <DropdownMenuItem onClick={triggerReset} className="gap-2"><RefreshCcw className="h-4 w-4" /> Reset Canvas</DropdownMenuItem>
                                 <DropdownMenuItem onClick={() => setDocDialogOpen(true)} className="gap-2"><FolderOpen className="h-4 w-4" /> Open…</DropdownMenuItem>
                                 <DropdownMenuSeparator />
                                 <DropdownMenuItem onClick={saveNow} className="gap-2"><FileIcon className="h-4 w-4" /> Save Now</DropdownMenuItem>
@@ -147,7 +174,7 @@ export const ActionsPanelMobile: React.FC = () => {
                                     {isActive && !isRenaming && <Check className='h-4 w-4 text-green-500' />}
                                     <div className='flex items-center gap-1'>
                                         <Button variant='ghost' size='icon' className='h-7 w-7' onClick={() => { setRenamingId(d.id); setRenameValue(d.name); }} aria-label='Rename'><FileIcon className='h-3.5 w-3.5' /></Button>
-                                        <Button variant='ghost' size='icon' className='h-7 w-7 text-destructive' onClick={() => deleteDoc(d.id)} aria-label='Delete'><Trash2 className='h-3.5 w-3.5' /></Button>
+                                        <Button variant='ghost' size='icon' className='h-7 w-7 text-destructive' onClick={() => requestDelete(d.id)} aria-label='Delete'><Trash2 className='h-3.5 w-3.5' /></Button>
                                         <Button variant='secondary' size='sm' className='h-7 text-xs' disabled={loadingDoc === d.id} onClick={() => openDoc(d.id)}>
                                             {loadingDoc === d.id ? <Loader2 className='h-3.5 w-3.5 animate-spin' /> : 'Open'}
                                         </Button>
@@ -159,6 +186,33 @@ export const ActionsPanelMobile: React.FC = () => {
                     </div>
                     <DialogFooter className='mt-4'>
                         <Button variant='secondary' onClick={() => setDocDialogOpen(false)}>Close</Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
+            {/* Delete Dialog */}
+            <Dialog open={!!deleteDialogId} onOpenChange={(o) => { if (!o) setDeleteDialogId(null); }}>
+                <DialogContent className="max-w-sm">
+                    <DialogHeader>
+                        <DialogTitle>Delete Document</DialogTitle>
+                        <DialogDescription>This action cannot be undone.</DialogDescription>
+                    </DialogHeader>
+                    <DialogFooter className="gap-2 flex flex-col sm:flex-row justify-end">
+                        <Button variant="outline" onClick={() => setDeleteDialogId(null)}>Cancel</Button>
+                        <Button variant="destructive" onClick={confirmDelete}>Delete</Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
+            {/* Reset Dialog */}
+            <Dialog open={resetOpen} onOpenChange={(o) => { if (!o) setResetOpen(false); }}>
+                <DialogContent className="max-w-sm">
+                    <DialogHeader>
+                        <DialogTitle>Reset Canvas</DialogTitle>
+                        <DialogDescription>Start a new blank document? Save or discard current changes.</DialogDescription>
+                    </DialogHeader>
+                    <DialogFooter className="gap-2 flex flex-col sm:flex-row justify-end">
+                        <Button variant="outline" onClick={() => setResetOpen(false)}>Cancel</Button>
+                        <Button variant="destructive" onClick={resetDiscard}>Discard</Button>
+                        <Button onClick={resetSave}>Save</Button>
                     </DialogFooter>
                 </DialogContent>
             </Dialog>

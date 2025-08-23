@@ -5,7 +5,7 @@ import * as fabric from "fabric";
 import { addImageBlob, addSVGString, copyToSystemClipboard, tryReadFromSystemClipboard } from "@/lib/fabric/clipboard";
 import { centerObjectAt, getCanvasCenterWorld } from "@/lib/fabric/utils";
 import { ShapeKind, insertShape, ShapeCreateContext, updateDraggingShape, finalizeDraggingShape } from "@/lib/fabric/shapes";
-import { classifyClipboardObject, FabricClipboardEntry, isActiveSelection } from "@/lib/fabric/types";
+import { classifyClipboardObject, FabricClipboardEntry } from "@/lib/fabric/types";
 import { toast } from "sonner";
 import { useMainStore } from "@/store/mainStore";
 import { CanvasTool } from "@/types/canvas";
@@ -42,6 +42,12 @@ export const useFabricCanvas = (): FabricCanvasHook => {
     const inFlightToastIdRef = useRef<string | number | null>(null);
     // Suppress DOM paste handler if we've already handled via programmatic paste (Ctrl/Cmd+V)
     const suppressNextDomPasteRef = useRef(false);
+    // Track active middle-button pan gesture and its end time to suppress unintended PRIMARY selection paste (Linux middle-click paste).
+    // Rationale: On X11/Wayland, middle mouse pastes PRIMARY selection on mouseup over focusable text inputs.
+    // Fabric may focus a hidden textarea for text editing, producing a spurious paste when the user was only panning.
+    // We suppress paste while middle pan is active and for a short window after release to cover long pans.
+    const middlePanActiveRef = useRef<boolean>(false);
+    const lastMiddlePanEndRef = useRef<number>(0);
 
     const tool = useMainStore(s => s.tool);
     const setTool = useMainStore(s => s.setTool);
@@ -102,7 +108,7 @@ export const useFabricCanvas = (): FabricCanvasHook => {
         const cloned = await (activeObject as fabric.Object).clone();
         clipboardRef.current = classifyClipboardObject(cloned as fabric.Object);
         await copyToSystemClipboard(activeObject, notify);
-        if (isActiveSelection(activeObject)) {
+        if (activeObject.isType?.('activeselection')) {
             await recordRemoveObjects(canvas, (activeObject as fabric.ActiveSelection)._objects as fabric.Object[], 'Cut');
         } else {
             await recordRemoveObjects(canvas, activeObject as fabric.Object, 'Cut');
@@ -125,7 +131,7 @@ export const useFabricCanvas = (): FabricCanvasHook => {
         if (!entry) return;
         const clonedObj = await (entry.clone as fabric.Object).clone();
         canvas.discardActiveObject();
-        if (entry.kind === "selection" && clonedObj.type === "activeSelection") {
+        if (entry.kind === "selection" && clonedObj.isType?.('activeselection')) {
             const activeSel = clonedObj as fabric.ActiveSelection;
             activeSel.canvas = canvas;
             const pasted: fabric.Object[] = [];
@@ -270,16 +276,12 @@ export const useFabricCanvas = (): FabricCanvasHook => {
         };
         window.addEventListener("keydown", handleKeydown);
         const handleKeyup = (e: KeyboardEvent) => {
-            // Delete / Backspace remove active object(s) unless currently editing text
+            // Centralized delete handling via store (supports undo & consistent selection reset)
             if (e.key === 'Delete' || e.key === 'Backspace') {
                 const active: any = canvas.getActiveObject();
                 if (active && !(active.type === 'i-text' && active.isEditing)) {
-                    if (isActiveSelection(active)) {
-                        recordRemoveObjects(canvas, (active as fabric.ActiveSelection)._objects as fabric.Object[], 'Delete');
-                    } else {
-                        recordRemoveObjects(canvas, active as fabric.Object, 'Delete');
-                    }
-                    setSelectionFromCanvas(canvas);
+                    // Avoid duplicate recording: call store deleteSelection which internally records
+                    try { useMainStore.getState().deleteSelection(canvas); } catch { /* noop */ }
                 }
             }
         };
@@ -287,6 +289,9 @@ export const useFabricCanvas = (): FabricCanvasHook => {
 
         const handlePasteEvent = async (e: ClipboardEvent) => {
             if (suppressNextDomPasteRef.current) { suppressNextDomPasteRef.current = false; return; }
+            // Suppress paste during an active middle-button pan or immediately after (covers long holds before release)
+            const now = Date.now();
+            if (middlePanActiveRef.current || (now - lastMiddlePanEndRef.current) < 300) return;
             if (!e.clipboardData) return; const dt = e.clipboardData; const target = getTargetPoint();
             for (const item of Array.from(dt.items)) {
                 if (item.type.startsWith("image/")) { const file = item.getAsFile(); if (file) { e.preventDefault(); await addImageBlob(canvas, file, target, notify); const obj = canvas.getActiveObject(); if (obj) addToGallery(obj); return; } }
@@ -415,7 +420,7 @@ export const useFabricCanvas = (): FabricCanvasHook => {
             // Snapshot object state for potential transform command recording
             if ((opt as any).target) {
                 const tgt = (opt as any).target as any;
-                if (tgt.type === 'activeSelection') {
+                if (tgt.isType?.('activeselection')) {
                     const objs: fabric.Object[] = [];
                     (tgt as fabric.ActiveSelection).forEachObject((o: fabric.Object) => objs.push(o));
                     (tgt as any).__qcBefore = snapshotObjects(objs);
@@ -429,6 +434,7 @@ export const useFabricCanvas = (): FabricCanvasHook => {
             const isTouch = !!e && (e.pointerType === 'touch' || e.type === 'touchstart');
             const wantsPan = isMiddle || (activeTool === 'pan' && (isTouch || isRight || e.button === 0));
             if (wantsPan) {
+                if (isMiddle) { middlePanActiveRef.current = true; }
                 if (e && e.preventDefault) e.preventDefault(); // avoid auto-scroll / context behavior
                 canvas.isDragging = true;
                 canvas.selection = false;
@@ -501,6 +507,12 @@ export const useFabricCanvas = (): FabricCanvasHook => {
                 canvas.setCursor('default');
                 canvas.renderAll();
             }
+            // If we just ended a middle-button pan, mark suppression window
+            const e = (opt as any)?.e as MouseEvent | undefined;
+            if (e && e.button === 1 && middlePanActiveRef.current) {
+                middlePanActiveRef.current = false;
+                lastMiddlePanEndRef.current = Date.now();
+            }
             if (creationRef.current) {
                 finalizeCreation();
                 setSelectionFromCanvas(canvas);
@@ -519,7 +531,7 @@ export const useFabricCanvas = (): FabricCanvasHook => {
             const before = target.__qcBefore;
             if (!before) return;
             let after: any[];
-            if (target.type === 'activeSelection') {
+            if (target.isType?.('activeselection')) {
                 const objs: fabric.Object[] = [];
                 (target as fabric.ActiveSelection).forEachObject((o: fabric.Object) => objs.push(o));
                 after = snapshotObjects(objs);

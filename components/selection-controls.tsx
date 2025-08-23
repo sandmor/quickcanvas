@@ -175,7 +175,7 @@ export const LayerControls: React.FC<{ selection: SelectionSnapshot; fns: Common
         const stack = canvas._objects; if (stack.length <= 1) return { bfwd: true, fwd: true, bwd: true, bback: true };
         const active = canvas.getActiveObject(); if (!active) return { bfwd: true, fwd: true, bwd: true, bback: true };
         const objs: fabric.Object[] = [];
-        if (active.type === 'activeSelection') (active as fabric.ActiveSelection).forEachObject(o => objs.push(o)); else objs.push(active);
+        if (active.isType('activeselection')) (active as fabric.ActiveSelection).forEachObject(o => objs.push(o)); else objs.push(active);
         const set = new Set(objs);
         const indices = objs.map(o => stack.indexOf(o)).filter(i => i >= 0).sort((a, b) => a - b);
         if (!indices.length) return { bfwd: true, fwd: true, bwd: true, bback: true };

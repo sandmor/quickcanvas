@@ -6,7 +6,8 @@ import * as fabric from "fabric";
 import { toast } from "sonner";
 import { stableHash } from "@/lib/utils";
 import { applyFillToObjectOrSelection, extractUnifiedFill, supportsFill } from "@/lib/fabric/selection";
-import { recordReorder, ensureObjectId, recordPropertyMutation, commandManager } from '@/lib/history/commandManager';
+import { recordReorder, ensureObjectId, recordPropertyMutation, commandManager, recordRemoveObjects } from '@/lib/history/commandManager';
+import { db, generateId, computeStableHash } from '@/lib/db';
 
 // Representation of a gallery resource (persisted in-memory for now)
 // We store: id, kind, a lightweight preview (dataURL), and a serialized object JSON
@@ -51,7 +52,7 @@ interface Mainstore {
     // Selection (centralized info derived from fabric canvas)
     selection: {
         has: boolean;
-        type: string | null; // fabric object type or 'activeSelection'
+        type: string | null; // fabric object type or 'activeselection'
         editingText: boolean;
         fill: string | null; // unified fill across selection or null if mixed / unsupported
         // Shape-specific unified properties (extensible). Only populated when all selected objects share a shape kind.
@@ -76,7 +77,7 @@ interface Mainstore {
     sendToBack: (canvas: fabric.Canvas) => void;
     gallery: GalleryItem[];
     /**
-     * Add a fabric object (single / image / activeSelection) to the gallery.
+     * Add a fabric object (single / image / activeselection) to the gallery.
      * Returns the GalleryItem (either newly created or the existing bumped one).
      */
     addToGallery: (obj: fabric.Object | fabric.ActiveSelection) => Promise<GalleryItem>;
@@ -108,14 +109,10 @@ export const useMainStore = create<Mainstore>()((set, get) => ({
     documents: [],
     documentDirty: false,
     loadDocuments: async () => {
-        const { db } = await import('@/lib/db');
-        console.log('Loading documents...');
         const docs = await db.documents.orderBy('updatedAt').reverse().toArray();
-        console.log('Loaded documents:', docs);
         set({ documents: docs.map(d => ({ id: d.id, name: d.name, updatedAt: d.updatedAt, preview: d.preview })) });
     },
     createDocument: async (name = 'Untitled') => {
-        const { db, generateId, computeStableHash } = await import('@/lib/db');
         const id = generateId();
         const now = Date.now();
         const emptyData = { version: '5', objects: [] };
@@ -125,7 +122,6 @@ export const useMainStore = create<Mainstore>()((set, get) => ({
         try { localStorage.setItem('qc:lastDoc', id); } catch { }
     },
     loadDocument: async (id, canvas) => {
-        const { db } = await import('@/lib/db');
         const rec = await db.documents.get(id);
         if (!rec) { toast.error('Document not found'); return; }
         // Short-circuit if already active (and no canvas reload requested)
@@ -152,12 +148,10 @@ export const useMainStore = create<Mainstore>()((set, get) => ({
         get().loadDocuments();
     },
     renameDocument: async (id, name) => {
-        const { db } = await import('@/lib/db');
         await db.documents.update(id, { name, updatedAt: Date.now() });
         set(state => ({ documentName: state.documentId === id ? name : state.documentName, documents: state.documents.map(d => d.id === id ? { ...d, name } : d) }));
     },
     deleteDocument: async (id, activeCanvas) => {
-        const { db } = await import('@/lib/db');
         await db.documents.delete(id);
         set(state => ({ documents: state.documents.filter(d => d.id !== id) }));
         const st = get();
@@ -174,7 +168,6 @@ export const useMainStore = create<Mainstore>()((set, get) => ({
         const { documentId, documentDirty } = get();
         if (!documentId) return;
         if (!opts?.force && !documentDirty) return; // skip if not dirty
-        const { db, computeStableHash } = await import('@/lib/db');
         const rec = await db.documents.get(documentId); if (!rec) return;
         let data = rec.data;
         try {
@@ -208,7 +201,7 @@ export const useMainStore = create<Mainstore>()((set, get) => ({
     selection: { has: false, type: null, editingText: false, fill: null, shape: null, capabilities: { fill: false, cornerRadius: false } },
     setSelectionFromCanvas: (canvas) => {
         const active = canvas.getActiveObject() as fabric.Object | fabric.ActiveSelection | null;
-        const editingText = !!active && active.type === 'i-text' && (active as any).isEditing;
+        const editingText = !!active && active.type === 'i-text' && (active as any).isEditing; // retain direct type for i-text (still valid)
         let fill: string | null = null;
         let shape: Mainstore['selection']['shape'] = null;
         let capabilities: NonNullable<Mainstore['selection']['capabilities']> = { fill: false, cornerRadius: false };
@@ -216,7 +209,7 @@ export const useMainStore = create<Mainstore>()((set, get) => ({
             fill = extractUnifiedFill(active);
             // Shape kind detection (all rects, all ellipses, etc.) – extensible
             const collect: fabric.Object[] = [];
-            if (active.type === 'activeSelection') (active as fabric.ActiveSelection).forEachObject(o => collect.push(o)); else collect.push(active);
+            if (active?.isType?.('activeselection')) (active as fabric.ActiveSelection).forEachObject(o => collect.push(o)); else if (active) collect.push(active);
             if (collect.length) {
                 // Capability: fill if any object supports fill
                 capabilities.fill = collect.some(o => supportsFill(o));
@@ -256,7 +249,7 @@ export const useMainStore = create<Mainstore>()((set, get) => ({
     applyRectCornerRadiusToSelection: (canvas, radius) => {
         const active = canvas.getActiveObject() as fabric.Object | fabric.ActiveSelection | null; if (!active) return;
         const objs: fabric.Object[] = [];
-        if (active.type === 'activeSelection') (active as fabric.ActiveSelection).forEachObject(o => objs.push(o)); else objs.push(active);
+        if (active.isType('activeselection')) (active as fabric.ActiveSelection).forEachObject(o => objs.push(o)); else objs.push(active);
         const rects = objs.filter(o => o.type === 'rect');
         if (!rects.length) return;
         rects.forEach(ensureObjectId);
@@ -283,19 +276,30 @@ export const useMainStore = create<Mainstore>()((set, get) => ({
         get().setSelectionFromCanvas(canvas);
     },
     deleteSelection: (canvas) => {
-        const active = canvas.getActiveObject() as any; if (!active) return;
-        if (active.type === 'activeSelection') {
-            (active as fabric.ActiveSelection).forEachObject((o: fabric.Object) => canvas.remove(o));
+        const active = canvas.getActiveObject(); if (!active) return;
+        // Use history-aware removal for consistency with keyboard delete & undo stack.
+        if (active.isType('activeselection')) {
+            const items: fabric.Object[] = [];
+            (active as fabric.ActiveSelection).forEachObject(o => items.push(o));
+            if (items.length) {
+                // alreadyRemoved=false so recordRemoveObjects performs removal + records command
+                recordRemoveObjects(canvas, items, 'Delete', false).then(() => {
+                    // After removal ensure selection snapshot reflects empty state
+                    canvas.discardActiveObject();
+                    get().setSelectionFromCanvas(canvas);
+                });
+            }
         } else {
-            canvas.remove(active);
+            recordRemoveObjects(canvas, active as fabric.Object, 'Delete', false).then(() => {
+                canvas.discardActiveObject();
+                get().setSelectionFromCanvas(canvas);
+            });
         }
-        canvas.discardActiveObject(); canvas.requestRenderAll();
-        set({ selection: { has: false, type: null, editingText: false, fill: null } });
     },
     bringForward: (canvas) => {
         const active = canvas.getActiveObject(); if (!active) return;
         const selection: fabric.Object[] = [];
-        if (active.type === 'activeSelection') (active as fabric.ActiveSelection).forEachObject(o => selection.push(o)); else selection.push(active);
+        if (active.isType('activeselection')) (active as fabric.ActiveSelection).forEachObject(o => selection.push(o)); else selection.push(active);
         if (!selection.length) return;
         canvas.getObjects().forEach(ensureObjectId);
         const before = canvas.getObjects().map(o => o.qcId || '');
@@ -309,7 +313,7 @@ export const useMainStore = create<Mainstore>()((set, get) => ({
     sendBackward: (canvas) => {
         const active = canvas.getActiveObject(); if (!active) return;
         const selection: fabric.Object[] = [];
-        if (active.type === 'activeSelection') (active as fabric.ActiveSelection).forEachObject(o => selection.push(o)); else selection.push(active);
+        if (active.isType('activeselection')) (active as fabric.ActiveSelection).forEachObject(o => selection.push(o)); else selection.push(active);
         if (!selection.length) return;
         canvas.getObjects().forEach(ensureObjectId);
         const before = canvas.getObjects().map(o => o.qcId || '');
@@ -322,7 +326,7 @@ export const useMainStore = create<Mainstore>()((set, get) => ({
     bringToFront: (canvas) => {
         const active = canvas.getActiveObject(); if (!active) return;
         const selection: fabric.Object[] = [];
-        if (active.type === 'activeSelection') (active as fabric.ActiveSelection).forEachObject(o => selection.push(o)); else selection.push(active);
+        if (active.isType('activeselection')) (active as fabric.ActiveSelection).forEachObject(o => selection.push(o)); else selection.push(active);
         if (!selection.length) return;
         canvas.getObjects().forEach(ensureObjectId);
         const before = canvas.getObjects().map(o => o.qcId || '');
@@ -335,7 +339,7 @@ export const useMainStore = create<Mainstore>()((set, get) => ({
     sendToBack: (canvas) => {
         const active = canvas.getActiveObject(); if (!active) return;
         const selection: fabric.Object[] = [];
-        if (active.type === 'activeSelection') (active as fabric.ActiveSelection).forEachObject(o => selection.push(o)); else selection.push(active);
+        if (active.isType('activeselection')) (active as fabric.ActiveSelection).forEachObject(o => selection.push(o)); else selection.push(active);
         if (!selection.length) return;
         canvas.getObjects().forEach(ensureObjectId);
         const before = canvas.getObjects().map(o => o.qcId || '');
@@ -354,7 +358,7 @@ export const useMainStore = create<Mainstore>()((set, get) => ({
 
         let payload: GalleryPayload;
         let kind: GalleryItem['kind'] = 'object';
-        const isSelection = (obj.type === 'activeSelection');
+        const isSelection = obj.isType?.('activeselection');
         const isImage = (obj.type === 'image');
 
         if (isSelection) {

@@ -1,7 +1,7 @@
 import * as fabric from "fabric";
 
 /**
- * Export a fabric object (single or activeSelection) to a PNG Blob.
+ * Export a fabric object (single or activeselection) to a PNG Blob.
  * Creates an offscreen canvas, normalizes object positions relative to top-left origin.
  */
 export const exportSelectionToPNGBlob = async (active: any): Promise<Blob> => {
@@ -16,7 +16,7 @@ export const exportSelectionToPNGBlob = async (active: any): Promise<Blob> => {
     });
 
     const cloned: any = await active.clone();
-    const objs: any[] = cloned.type === "activeSelection" ? cloned._objects || [] : [cloned];
+    const objs: any[] = cloned.isType?.('activeselection') ? cloned._objects || [] : [cloned];
     for (const o of objs) {
         try {
             const c: any = await o.clone();
@@ -35,7 +35,7 @@ export const exportSelectionToPNGBlob = async (active: any): Promise<Blob> => {
 };
 
 /**
- * Export a fabric object (single or activeSelection) to an SVG string with a viewBox.
+ * Export a fabric object (single or activeselection) to an SVG string with a viewBox.
  */
 export const exportSelectionToSVGString = async (active: any): Promise<string> => {
     const bounds = active.getBoundingRect(true, true);
@@ -49,7 +49,7 @@ export const exportSelectionToSVGString = async (active: any): Promise<string> =
     });
 
     const cloned: any = await active.clone();
-    const objs: any[] = cloned.type === "activeSelection" ? cloned._objects || [] : [cloned];
+    const objs: any[] = cloned.isType?.('activeselection') ? cloned._objects || [] : [cloned];
     for (const o of objs) {
         try {
             const c: any = await o.clone();
