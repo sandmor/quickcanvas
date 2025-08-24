@@ -134,7 +134,7 @@ export const updateDraggingShape = (
         }
         width = Math.max(minSize, width); height = Math.max(minSize, height);
         ctx.object.set({ left, top, width, height });
-        (ctx.object as fabric.Rect).setCoords();
+        ctx.object.setCoords();
     } else if (kind === 'ellipse') {
         let w: number; let h: number; let left: number; let top: number;
         if (fromCenter) {
@@ -154,8 +154,8 @@ export const updateDraggingShape = (
         }
         w = Math.max(minSize, w); h = Math.max(minSize, h);
         ctx.object.set({ left, top });
-        (ctx.object as fabric.Ellipse).set({ rx: w / 2, ry: h / 2 });
-        (ctx.object as fabric.Ellipse).setCoords();
+        ctx.object.set({ rx: w / 2, ry: h / 2 });
+        ctx.object.setCoords();
     } else if (kind === 'line') {
         let x2 = origin.x + dx; let y2 = origin.y + dy;
         if (maintainAspect) {
@@ -165,8 +165,8 @@ export const updateDraggingShape = (
             x2 = origin.x + Math.cos(snapped) * len;
             y2 = origin.y + Math.sin(snapped) * len;
         }
-        (ctx.object as fabric.Line).set({ x1: origin.x, y1: origin.y, x2, y2 });
-        (ctx.object as fabric.Line).setCoords();
+        ctx.object.set({ x1: origin.x, y1: origin.y, x2, y2 });
+        ctx.object.setCoords();
     }
     canvas.requestRenderAll();
     return ctx.object;

@@ -22,7 +22,6 @@ export interface FabricCanvasHook {
 }
 
 export const useFabricCanvas = (): FabricCanvasHook => {
-    // Use explicit possibly-null element ref but cast on return to align with consumer expectations
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
     const fabricCanvasRef = useRef<fabric.Canvas | null>(null);
     const clipboardRef = useRef<FabricClipboardEntry | null>(null);
@@ -95,8 +94,8 @@ export const useFabricCanvas = (): FabricCanvasHook => {
         const canvas = fabricCanvasRef.current; if (!canvas) return;
         const activeObject = canvas.getActiveObject();
         if (!activeObject) return;
-        const cloned = await (activeObject as fabric.Object).clone();
-        clipboardRef.current = classifyClipboardObject(cloned as fabric.Object);
+        const cloned = await activeObject.clone();
+        clipboardRef.current = classifyClipboardObject(cloned);
         await copyToSystemClipboard(activeObject, notify);
         setSelectionFromCanvas(canvas);
     }, []);
@@ -105,13 +104,13 @@ export const useFabricCanvas = (): FabricCanvasHook => {
         const canvas = fabricCanvasRef.current; if (!canvas) return;
         const activeObject = canvas.getActiveObject();
         if (!activeObject) return;
-        const cloned = await (activeObject as fabric.Object).clone();
-        clipboardRef.current = classifyClipboardObject(cloned as fabric.Object);
+        const cloned = await activeObject.clone();
+        clipboardRef.current = classifyClipboardObject(cloned);
         await copyToSystemClipboard(activeObject, notify);
         if (activeObject.isType?.('activeselection')) {
-            await recordRemoveObjects(canvas, (activeObject as fabric.ActiveSelection)._objects as fabric.Object[], 'Cut');
+            await recordRemoveObjects(canvas, (activeObject as fabric.ActiveSelection)._objects, 'Cut');
         } else {
-            await recordRemoveObjects(canvas, activeObject as fabric.Object, 'Cut');
+            await recordRemoveObjects(canvas, activeObject, 'Cut');
         }
         setSelectionFromCanvas(canvas);
     }, [notify]);
@@ -129,7 +128,7 @@ export const useFabricCanvas = (): FabricCanvasHook => {
         if (didSystem) return;
         const entry = clipboardRef.current;
         if (!entry) return;
-        const clonedObj = await (entry.clone as fabric.Object).clone();
+        const clonedObj = await entry.clone.clone();
         canvas.discardActiveObject();
         if (entry.kind === "selection" && clonedObj.isType?.('activeselection')) {
             const activeSel = clonedObj as fabric.ActiveSelection;
@@ -267,7 +266,7 @@ export const useFabricCanvas = (): FabricCanvasHook => {
                 if (objs.length === 1) {
                     canvas.setActiveObject(objs[0]);
                 } else if (objs.length > 1) {
-                    const sel = new fabric.ActiveSelection(objs, { canvas: canvas as fabric.Canvas });
+                    const sel = new fabric.ActiveSelection(objs, { canvas });
                     canvas.setActiveObject(sel);
                 }
                 canvas.requestRenderAll();
@@ -422,7 +421,7 @@ export const useFabricCanvas = (): FabricCanvasHook => {
                 const tgt = (opt as any).target as any;
                 if (tgt.isType?.('activeselection')) {
                     const objs: fabric.Object[] = [];
-                    (tgt as fabric.ActiveSelection).forEachObject((o: fabric.Object) => objs.push(o));
+                    (tgt as fabric.ActiveSelection).forEachObject((o) => objs.push(o));
                     (tgt as any).__qcBefore = snapshotObjects(objs);
                 } else {
                     (tgt as any).__qcBefore = snapshotObjects(tgt);
@@ -533,7 +532,7 @@ export const useFabricCanvas = (): FabricCanvasHook => {
             let after: any[];
             if (target.isType?.('activeselection')) {
                 const objs: fabric.Object[] = [];
-                (target as fabric.ActiveSelection).forEachObject((o: fabric.Object) => objs.push(o));
+                (target as fabric.ActiveSelection).forEachObject((o) => objs.push(o));
                 after = snapshotObjects(objs);
             } else {
                 after = snapshotObjects(target);
